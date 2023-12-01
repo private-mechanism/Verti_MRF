@@ -1,0 +1,1775 @@
+from .factor import Factor, Potential
+import numpy as np
+import cupy as cp
+import networkx as nx
+from .utils import tools
+import math
+import itertools
+import time
+import pickle
+import random
+import pandas as pd
+from .domain import Domain
+from .attribute_hierarchy import Attribute
+import os
+import json
+import logging
+import copy
+
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+class MarkovRandomField:
+    def __init__(self, bin_data, data, bin_domain, domain, graph, measure_list, attr_list, attr_index,\
+        attr_to_level, noisy_data_num, config, private_statistics, fmsketches, eps, mrf_msg, binning_map, gpu=False):
+        self.bin_data = bin_data
+        self.data = data
+        self.bin_domain = bin_domain
+        self.domain = domain
+        self.attr_list = attr_list
+        self.attr_to_level = attr_to_level
+        self.config = config
+        self.data_num = len(self.data)
+        self.noisy_data_num = int(noisy_data_num)
+        if self.config['structure_entropy']:
+            self.noisy_data_num = self.data_num
+        self.max_measure_attr_num = config['max_measure_attr_num']
+        self.attr_num = len(domain)
+        self.gpu = True
+        self.private_statistics = private_statistics
+        self.fmsketches = fmsketches
+        self.eps = eps
+        self.mrf_msg = mrf_msg
+        self.attr_index = attr_index
+        self.binning_map = binning_map
+        self.histogram_dict = {}
+        self.R_score = {}
+        self.config['epsilon'] = self.eps*np.sqrt(len(domain))
+        # for attr in self.attr_index:
+        #     measure = (attr,)
+        # # #     # temp_domain = domain.project(measure)
+        #     histogram= self.private_statistics['histogram'][attr]
+        #     # temp_domain = self.domain.project(measure)
+        #     # histogram, _ = np.histogramdd(self.data[:, measure], bins=temp_domain.edge())
+        #     # mean = np.zeros_like(histogram)
+        #     # noise = np.random.laplace(mean,1/eps_temp)
+        #     self.histogram_dict[measure] = histogram
+        # for attr1 in self.attr_index:
+        #     for attr2 in self.attr_index:
+        #         if attr2 > attr1:
+        #             self.histogram_dict[(attr1, attr2)] = self.fm_intersection_ca([attr1, attr2])
+        #             self.R_score[(attr1, attr2)]= self.dp_TVD([attr1, attr2])
+        # for attr1 in self.attr_index:
+        #     for attr2 in self.attr_index:
+        #         for attr3 in self.attr_index:
+        #             if attr2 > attr1 and attr3>attr2:
+        #                 self.histogram_dict[(attr1, attr2, attr3)] = self.fm_intersection_ca([attr1, attr2, attr3])
+        if config['data'] == 'adult' or config['data'] == 'br2000' or config['data'] == 'fire':
+            self.gpu = True
+        if config['data'] == 'acs' or config['data'] == 'nltcs':
+            self.gpu = False
+
+
+        # triangulate graph        
+        if nx.is_chordal(graph):
+            self.graph = graph
+        else:
+            self.graph = tools.triangulate(graph)
+        
+        if self.config['enable_attribute_hierarchy']:
+            self.improve_attribute_level_for_data_domain()
+            self.map_data_with_hierarchy()
+
+            # add subattr to graph
+            for attr in range(self.attr_num):
+                if self.attr_to_level[attr] == self.max_level[attr]:
+                    continue
+                subattr = self.attr_to_subattr[attr]
+                for neighbor in self.graph[attr]:
+                    self.graph.add_edge(subattr, neighbor) 
+                self.graph.add_edge(attr, subattr)
+
+        # construct junction tree
+        self.maximal_cliques = [tuple(sorted(clique)) for clique in nx.find_cliques(self.graph)]
+        clique_graph = nx.Graph()
+        clique_graph.add_nodes_from(self.maximal_cliques)
+        for clique1, clique2 in itertools.combinations(self.maximal_cliques, 2):
+            clique_graph.add_edge(clique1, clique2, weight=-len(set(clique1) & set(clique2)))
+        self.junction_tree = nx.minimum_spanning_tree(clique_graph)
+        # self.gpu = False
+        if self.gpu:
+            xp = cp
+        else:
+            xp = np
+       
+
+        ## Understanding: Initialize the parameter of the potentail function
+        self.potential = Potential({clique: Factor.zeros(self.domain.project(clique), xp) for clique in self.maximal_cliques})
+
+        # for clique in self.maximal_cliques:
+        #     if clique in self.mrf_msg[0][0].potential:
+        #         self.potential[clique] = self.mrf_msg[0][0].potential[clique]
+        #     elif clique in self.mrf_msg[1][0].potential:
+        #         self.potential[clique] = self.mrf_msg[1][0].potential[clique]
+     
+        size = sum(self.domain.project(clique).size() for clique in self.maximal_cliques)
+
+        print('model size: {:.4e}'.format(size))
+        print('noisy data num: {} data num: {}'.format(self.noisy_data_num, self.data_num))
+
+        print('clique length:', [len(clique) for clique in self.maximal_cliques])
+        print('convergence_ratio', self.config['convergence_ratio'])
+        print('final_convergence_ratio', self.config['final_convergence_ratio'])
+
+        # construct measures
+        self.measure_set = set(measure_list)
+        # if len(self.measure_set) > self.config['init_measure_num']:
+        #     random.shuffle(list(self.measure_set))
+        #     self.measure_set = set(list(self.measure_set)[:self.config['init_measure_num']])
+        # else:
+        # self.measure_set = set(self.measure_set)
+        # count = 0
+        # mea_temp = []
+        # for measure in self.measure_set:
+        #     if set(list(measure)).issubset(set([0,1,2,3,4,5,6,7])) or set(list(measure)).issubset(set([8,9,10,11,12,13,14,15])): 
+        #         count += 1
+        #         mea_temp.append(measure)
+        # for measure in mea_temp:
+        #     temp_domain = self.domain.project(measure)
+        #     histogram, _ = np.histogramdd(self.data[:, measure], bins=temp_domain.edge())
+        #     size = self.domain.project(measure).size()
+        #     eps = self.eps/count/size
+        #     mean = np.zeros_like(histogram)
+        #     noise = np.random.laplace(mean,1/eps)
+        #     self.histogram_dict[measure] = histogram + noise
+
+        self.config['norm_query_number'] = 400
+        print('k:', self.config['norm_query_number'])
+        if self.config['use_exp_mech'] > 0:
+            self.config['norm_query_number'] = int(1e4)
+
+        temp_list = []
+        for measure in self.measure_set:
+            temp_list.append(tuple(sorted(list(measure))))
+        self.measure_set = set(temp_list)
+        if self.config['enable_attribute_hierarchy']:
+            for attr in range(self.attr_num):
+                if self.attr_to_level[attr] != self.max_level[attr]:
+                    print('attr heirarchy measure', (attr, ))
+                    self.measure_set.add((attr, ))
+
+        # measure_set contains: single attr, single attr with subattr, multiple attrs
+
+        print('initial measure number: {}'.format(len(self.measure_set)))
+        print('initial measure set:')
+        if len(self.measure_set) != 0:
+            max_len = max([len(measure) for measure in self.measure_set])
+            for i in range(1, max_len+1):
+                print_list = [item for item in self.measure_set if len(item) == i]
+                if len(print_list) > 0:
+                    print('    ', print_list)
+        if len(self.measure_set) < self.config['init_measure_num']:
+            delta_beta = config['beta2'] * (self.config['init_measure_num'] - len(self.measure_set))/self.config['init_measure_num']
+            print(len(self.measure_set), self.config['init_measure_num'], delta_beta)
+            config['beta2'] -= delta_beta
+            config['beta4'] += delta_beta
+            print('adjust privacy budget: beta2: {:.2f} beta4: {:.2f}'.format(config['beta2'], config['beta4']))
+
+        self.print_measure_count(self.measure_set)
+
+        # generate noise scale
+        self.generte_noise_scale()
+
+        # add subattr for multiple attrs measure
+        # add subattr for multiple attrs measure
+        if self.config['enable_attribute_hierarchy']:
+            temp_list = []
+            for measure in self.measure_set:
+                temp_list.append(\
+                    self.get_measure_with_hierarchy(measure))
+            self.measure_set = set(temp_list)
+
+            print('  initial measure set with hierarchy:')
+
+            for measure_item in self.measure_set:
+                if len(measure_item[1]) != 0:
+                    print('    ', measure_item)
+
+        if self.config['enable_attribute_hierarchy']:
+            measure_dict, measure_set = self.query_marginal_with_hierarchy(self.measure_set)
+            self.measure_set = measure_set
+            print('  measure set', self.measure_set)
+        else:
+            # measure_dict = tools.dp_marginal_list(self.data, domain, self.measure_set, self.marginal_noise, noise_type=self.config['noise_type'])
+            privacy_budget_ini_measure = self.privacy_budget2/np.sqrt(len(self.measure_set))
+            measure_dict = self.dp_marginal_list(self.data, self.domain, self.measure_set, privacy_budget_ini_measure)
+            if gpu:
+                for measure in measure_dict:
+                    temp = measure_dict[measure]
+                    measure_dict[measure] = Factor(temp.domain, temp.values, cp)
+
+        self.measure = Potential(measure_dict)
+        self.marginal = None
+
+        self.iter_num = config['estimation_iter_num']
+        
+        # assign measures to maximal cliques
+        self.clique_to_measure = {clique: [] for clique in self.maximal_cliques}
+        self.measure_to_clique = {}
+        for measure in self.measure_set:
+            for clique in self.maximal_cliques:
+                if set(measure) <= set(clique):
+                    self.clique_to_measure[clique].append(measure)
+                    self.measure_to_clique[measure] = clique
+                    break       
+        self.generte_noise_scale_de()
+
+        # generate message orders
+        message_list = [(a, b) for a, b in self.junction_tree.edges()] + [(b, a) for a, b in self.junction_tree.edges()] 
+        message_edge = []
+        for message1 in message_list:
+            for message2 in message_list:
+                if message1[0] == message2[1] and message2[0] != message1[1]:
+                    message_edge.append((message2, message1))
+        G = nx.DiGraph()
+        G.add_nodes_from(message_list)
+        G.add_edges_from(message_edge)
+        self.message_order = list(nx.topological_sort(G))
+        self.average_it = 0
+
+
+    def set_zero_for_hierarchy(self, measure_value, measure, attrs):
+        for attr in attrs:
+            subattr = self.attr_to_subattr[attr]
+            index1 = measure.index(attr)
+            index2 = measure.index(subattr)
+
+            for value in range(self.domain.attr_domain(attr)):
+                item = self.value_id_to_vn[attr][value]
+                if isinstance(item, Attribute):
+                    subattr_range = list(range(len(item.value_list), self.domain.attr_domain(subattr)))
+                else:
+                    subattr_range = list(range(1, self.domain.attr_domain(subattr)))
+
+                indices = [slice(None)]*measure_value.ndim
+                indices[index1] = value
+                indices[index2] = subattr_range
+                measure_value[tuple(indices)] = 0
+
+                
+
+    def query_marginal_with_hierarchy(self, measure_set):
+        marginal_dict = {}
+        temp_list = []
+        for measure_item in measure_set:
+            attrs = list(measure_item[0])
+            subattrs = list(self.attr_to_subattr[attr] for attr in measure_item[1])
+            measure = tuple(attrs + subattrs)
+            # measure_value = tools.dp_marginal_list(self.data, self.domain, \
+            #     [measure], self.marginal_noise, return_factor=False, noise_type=self.config['noise_type'])[measure]
+            measure_value = self.dp_marginal_list(self.data, self.domain, measure)[measure]
+            # temp_domain = self.domain.project(measure)
+            # histogram, _ = np.histogramdd(self.data[:, measure], bins=temp_domain.edge())
+            # tvd1 = np.sum(np.abs(measure_value - histogram))/self.noisy_data_num/2
+            self.set_zero_for_hierarchy(measure_value, measure, measure_item[1])
+            # tvd2 = np.sum(np.abs(measure_value - histogram))/self.noisy_data_num/2
+            # print('structural zeros', measure, tvd1, tvd2)
+
+            if self.gpu:
+                xp = cp
+            else:
+                xp = np
+            
+            temp_list.append(measure)
+            fact = Factor(self.domain.project(measure), measure_value, xp)
+            marginal_dict[measure] = fact
+
+        return marginal_dict, set(temp_list)
+    
+    # add subattr for measure when possible
+    # return (measure, attrs_with_subattr)
+    def get_measure_with_hierarchy(self, measure):
+        if len(measure) == 2:
+            dom_limit = self.max_measure_dom_2way
+        elif len(measure) == 1:
+            dom_limit = 1e6
+        else:
+            dom_limit = self.max_measure_dom_high_way
+        temp_measure = list(measure)
+        random.shuffle(temp_measure)
+        res = []
+        measure_size = self.domain.project(measure).size()
+        for attr in temp_measure:
+            if self.attr_to_level[attr] == self.max_level[attr]:
+                continue
+            temp_size = measure_size/self.attr_list[attr].level_to_size[self.attr_to_level[attr]]\
+                *self.attr_list[attr].level_to_size[self.max_level[attr]]
+
+            if temp_size < dom_limit:
+                res.append(attr)
+                measure_size = temp_size
+        # if len(res) > 0:
+        #     print('  upgraded measure: ', measure, res)
+        return (measure, tuple(sorted(res)))
+
+    # change data and domain to fit attribute heirarchy
+    # generate map from string data to int data
+    def improve_attribute_level_for_data_domain(self):
+        for attr in range(self.attr_num):
+            self.domain.dict[attr]['domain'] = \
+                self.attr_list[attr].level_to_size[self.attr_to_level[attr]]
+
+        self.max_level = []
+        for attr in range(self.attr_num):
+            self.max_level.append(max(self.attr_list[attr].level_to_size.keys()))
+
+        # for attr in range(self.attr_num):
+        #     print(self.attr_list[attr].string())
+
+        def value_to_attr_value(attribute, cur_level, level, value_id, value_id_to_vn, vn_to_value_id):
+            if cur_level <= level:
+                for value in attribute.value_list:
+                    value_id_to_vn[value_id] = value
+                    vn_to_value_id[value] = value_id
+                    value_id += 1
+            if cur_level < level:
+                for node in attribute.node_list:
+                    value_id = value_to_attr_value(node, cur_level+1, level, value_id, value_id_to_vn, vn_to_value_id)
+            elif cur_level == level:
+                for node in attribute.node_list:
+                    value_id_to_vn[value_id] = node
+                    vn_to_value_id[node] = value_id
+                    value_id += 1
+            return value_id
+
+        def node_values(attribute, res):
+            res.extend(attribute.value_list)
+            for node in attribute.node_list:
+                node_values(node, res)
+
+        self.value_id_to_vn = [0]*self.attr_num
+        self.value_to_value_id = [0]*self.attr_num
+        self.subattr_value_id_to_value = [0]*self.attr_num
+        self.subattr_value_to_value_id = [0]*self.attr_num
+        
+        # attr is column number, subattrs are sorted by their attrs
+        self.attr_to_subattr = [-1]*self.attr_num
+        self.subattr_num = self.attr_num
+        for attr in range(self.attr_num):
+            if self.attr_to_level[attr] == self.max_level[attr]:
+                continue
+
+            self.attr_to_subattr[attr] = self.subattr_num
+            
+            # value id to value/node
+            value_id_to_vn = {}
+            # value/node to value id
+            vn_to_value_id = {}
+            value_to_attr_value(self.attr_list[attr], 0, self.attr_to_level[attr],\
+                0, value_id_to_vn, vn_to_value_id)
+            # value to value id
+            value_to_value_id = {}
+
+            self.subattr_value_id_to_value.append({})
+            self.subattr_value_to_value_id.append({})
+
+            subattr_size = 0
+            # subattr value to value id
+            subattr_value_to_value_id = {}
+            for item in vn_to_value_id:
+                if isinstance(item, Attribute):
+                    node = item
+                    node_value_id = 0
+                    node_id = vn_to_value_id[node]
+                    values = []
+                    node_values(node, values)
+                    subattr_size = max(len(values), subattr_size)
+                    # subattr value id to value
+                    subattr_value_id_to_value = {}
+                    for value in values:
+                        value_to_value_id[value] = node_id
+                        subattr_value_id_to_value[node_value_id] = value
+                        subattr_value_to_value_id[value] = node_value_id
+                        node_value_id += 1
+                    self.subattr_value_id_to_value[self.subattr_num][node] = subattr_value_id_to_value
+                else:
+                    value_to_value_id[item] = vn_to_value_id[item]
+            self.subattr_value_to_value_id[self.subattr_num] = subattr_value_to_value_id
+            self.domain.dict[self.subattr_num] = {'domain': subattr_size}
+            self.value_id_to_vn[attr] = value_id_to_vn
+            self.value_to_value_id[attr] = value_to_value_id
+            self.subattr_num += 1
+
+
+        print('  subattr: ', self.attr_to_subattr)
+        self.domain = Domain(self.domain.dict, list(range(self.subattr_num)))
+
+        print('  attrs: ', self.domain.attr_list)
+        print('  shape: ', self.domain.shape)
+
+    def map_data_with_hierarchy(self):
+        data_list = []
+        for line in self.data:
+            new_line = list(line) + [0]*(self.subattr_num-self.attr_num)
+            for attr in range(self.attr_num):
+                if self.attr_to_level[attr] == self.max_level[attr]:
+                    continue
+                value_id = self.value_to_value_id[attr][line[attr]]
+                new_line[attr] = value_id
+                
+                subattr = self.attr_to_subattr[attr]
+                item = self.value_id_to_vn[attr][value_id]
+                if isinstance(item, Attribute):
+                    new_line[subattr] = self.subattr_value_to_value_id[subattr][line[attr]]
+                else:
+                    new_line[subattr] = 0
+
+            data_list.append(new_line)
+        self.data = np.array(data_list)
+
+    def map_data_with_hierarchy_back(self, np_data):
+        print('map synthetic data back to original domain')
+        data_list = []
+        for line in np_data:
+            new_line = list(line)[:self.attr_num]
+            for attr in range(self.attr_num):
+                if self.attr_to_level[attr] == self.max_level[attr]:
+                    continue
+                item = self.value_id_to_vn[attr][line[attr]]
+                if isinstance(item, Attribute):
+                    subattr = self.attr_to_subattr[attr]
+                    new_line[attr] = self.subattr_value_id_to_value[subattr][item][line[subattr]]
+                else:
+                    new_line[attr] = item
+            data_list.append(new_line)
+        return data_list
+
+    def print_measure_count(self, measure_set):
+        measure_length = [0]
+        for measure in measure_set:
+            if len(measure) > len(measure_length)-1:
+                measure_length.extend([0] * (len(measure)-len(measure_length)+1))
+            measure_length[len(measure)] += 1
+        print('    measure count: ', measure_length[1:])
+
+    # calculate noise scale according to hyperparameters and Gaussain mechanism
+    def generte_noise_scale(self):
+        if self.config['use_exp_mech'] > 0:
+            total_privacy_budget = tools.privacy_budget(self.config['epsilon']*(1-self.config['use_exp_mech']))
+        else:
+            total_privacy_budget = tools.privacy_budget(self.config['epsilon'])
+        self.privacy_budget2 = self.config['beta2'] * total_privacy_budget
+        
+        self.privacy_budget4 = self.config['beta4'] * total_privacy_budget
+
+        if len(self.measure_set) == 0:
+            self.de_mesaure_num = int(1.5 * self.attr_num)
+            self.marginal_noise = math.sqrt(self.de_mesaure_num / self.privacy_budget4)
+        else:
+            if self.config['noise_type'] == 'normal':
+                self.marginal_distribution_budget = (1-self.config['beta1']-self.config['beta3']) * total_privacy_budget
+                self.de_mesaure_num = int(self.config['t']*self.attr_num)
+                self.marginal_noise = math.sqrt((len(self.measure_set) + self.de_mesaure_num) / self.marginal_distribution_budget)
+            elif self.config['noise_type'] == 'Laplace':
+                # this is for PGM + PrivBayes, beta2 is valid
+                self.marginal_noise = len(self.measure_set) / self.config['epsilon'] / self.config['beta2']
+                self.de_mesaure_num = -1
+            # self.de_mesaure_num = int(privacy_budget4 * self.marginal_noise * self.marginal_noise)
+
+         # For Gaussian distribution, MAD = sigma * (2/math.pi) ** 0.5
+        self.max_measure_dom_2way = self.noisy_data_num / (self.marginal_noise * (2/math.pi) ** 0.5) / self.config['theta1']
+        self.max_measure_dom_high_way = self.noisy_data_num / (self.marginal_noise * (2/math.pi) ** 0.5) / self.config['theta2']
+
+        if self.config['structure_entropy']:
+            self.marginal_noise = 0
+
+        # self.eps = self.config['query_eps']
+
+        print('  marginal noise:           ', self.marginal_noise)
+        print('  max 2way measure dom:     ', self.max_measure_dom_2way)
+        print('  max high way measure dom: ', self.max_measure_dom_high_way)
+        print('  max de measure num        ', self.de_mesaure_num)
+
+
+    def generte_noise_scale_de(self):
+        if self.config['init_measure'] == 3:
+            self.config['ed_step_num'] = min(int(self.attr_num), 12)
+        else:
+            ed_step_num = self.config['ed_step_num']
+            self.config['ed_step_num'] = min(int(self.attr_num / 2), ed_step_num)
+        print('ed_step_num: {}'.format(self.config['ed_step_num']))
+
+        total_privacy_budget = tools.privacy_budget(self.config['epsilon'])
+        if self.config['use_exp_mech'] < 0:
+            self.privacy_budget3 = self.config['beta3'] * total_privacy_budget
+
+
+    def get_theoretic_loss(self):
+        loss = 0
+        for measure in self.measure_set:
+            loss += self.domain.project(measure).size() * self.marginal_noise * self.marginal_noise
+        self.theoretic_loss = 1/2 * loss
+        return self.theoretic_loss
+
+
+    def print_total_variation_distance(self):
+        # print('  print all measure')
+        # self.print_measure(self.all_measure_set)
+        print('  print measure set')
+        self.print_measure(self.measure_set)
+
+    def dump_entropy(self, path, entropy, i):
+        entropy_log = {}
+        if os.path.exists(path):
+            with open(path, 'r') as in_file:
+                entropy_log = json.load(in_file)
+        if self.config['data'] not in entropy_log:
+            entropy_log[self.config['data']] = {}
+        epsilon = str(self.config['epsilon'])
+        if epsilon not in entropy_log[self.config['data']]:
+            entropy_log[self.config['data']][epsilon] = {}
+        entropy_log[self.config['data']][epsilon][str(i)] = entropy
+
+        with open(path, 'w') as out_file:
+            json.dump(entropy_log, out_file)
+
+    # main process
+    '''
+    functions to be checked:
+    1. self.get_theoretic_loss. compute the loss incurred by gauusian noises.
+    2. self.estimate_parameters. no need
+    3. self.get_entropy. no need to design
+    4. self.dump_entropy. no need to design
+    5. self.select_measure. args: dp_1norm
+    6. self.cal_marginal_dict. args: dp_marginal_list
+    
+    
+    need modification:
+    dp_1norm:
+    dp_marginal_list:
+    '''
+
+    def entropy_descent(self):
+        consider_measure_list = []
+        consider_measure_list_ = self.generate_measure_set()
+        set_attr_alice = set(self.mrf_msg['alice']['attr_list'])
+        set_attr_bob = set(self.mrf_msg['bob']['attr_list'])
+        for measure, weight in consider_measure_list_:
+            set_index = set([measure[i] for i in range(len(measure))])
+            bin_domain_size = self.bin_domain.project(set_index).size()
+            if not (set_index.issubset(set_attr_alice) or set_index.issubset(set_attr_bob)) and len(set_index)<3:
+                consider_measure_list.append((measure,weight))
+        # print('consider measure set:')
+        # self.print_measure_count([item[0] for item in self.consider_measure_list])
+        # consider_measure_list = copy.deepcopy(consider_measure_list_)
+        # self.print_total_variation_distance()
+        # print('theoretic loss: {:.4e}'.format(self.get_theoretic_loss()))
+        if self.config['ed_step_num'] == 0:
+            self.config['convergence_ratio'] = self.config['final_convergence_ratio']
+        if len(self.measure_set) != 0:
+            self.estimate_parameters()
+        
+        # 
+        entropy = self.get_entropy()
+        print('entropy: {}'.format(entropy))
+        if self.config['structure_entropy']:
+            self.dump_entropy('./entropy_log.json', entropy, 'init')
+        # self.print_total_variation_distance()
+
+        if self.config['ed_step_num'] == 0:
+            return
+
+        measure_num_per_iter = int(self.de_mesaure_num/self.config['ed_step_num'])
+        measure_num_list = [measure_num_per_iter] * self.config['ed_step_num']
+        for i in range(self.de_mesaure_num - measure_num_per_iter * self.config['ed_step_num']):
+            measure_num_list[i] += 1
+
+        print('measure num list', measure_num_list)
+        self.ed_step_num = self.config['ed_step_num']
+        for i in range(self.ed_step_num-1, -1, -1):
+            if measure_num_list[i] == 0:
+                self.ed_step_num = i
+            else:
+                break
+        for i in range(self.ed_step_num):
+        # for i in range(2):
+            print('entropy descent step: {}/{}'.format(i, self.ed_step_num))
+            print('  consider measure set:')
+            if len(consider_measure_list)==0:
+                break
+            self.print_measure_count([item[0] for item in consider_measure_list])
+
+            min_it = 0
+            if i == self.ed_step_num - 1:
+                self.config['convergence_ratio'] = self.config['final_convergence_ratio']
+                min_it = self.average_it/i * 3
+            if self.config['use_exp_mech'] > 0:
+                new_measure_list, new_consider = self.select_measure_exp(consider_measure_list, measure_num_list[i])
+            else:
+                new_measure_list, new_consider = self.select_measure(consider_measure_list, measure_num_list[i])
+            consider_measure_list = new_consider
+            print('  measure num: {}'.format(len(self.measure_set)))
+
+            if len(new_measure_list) == 0 and i != self.ed_step_num - 1:
+                continue
+
+            self.add_potentials(new_measure_list)
+            self.print_measure_count(self.measure_set)
+            # print('  theoretic loss: {:.4e}'.format(self.get_theoretic_loss()))
+
+            self.estimate_parameters(min_it)
+            # self.print_total_variation_distance()
+            entropy = self.get_entropy()
+            print('entropy: {}'.format(entropy))
+            # self.print_measure(self.sampled_measure_list)
+            if self.config['structure_entropy']:
+                self.dump_entropy('./entropy_log.json', entropy, i)
+
+        with open('./temp/log.txt', 'w') as out_file:
+            out_file.write(str(self.measure_set))
+        # MarkovRandomField.save_model(self, './temp/model.mrf')
+
+    # add new potentials to the graphical model
+    def add_potentials(self, new_measure):
+        if self.config['enable_attribute_hierarchy']:
+            measure_dict, measure_set = self.query_marginal_with_hierarchy(new_measure)
+            for measure in measure_set:
+                self.measure[measure] = measure_dict[measure]
+                self.measure_set.add(measure)
+                for clique in self.maximal_cliques:
+                    if set(measure) <= set(clique):
+                        self.clique_to_measure[clique].append(measure)
+                        self.measure_to_clique[measure] = clique
+                        break
+        else:
+            for measure in new_measure:
+                measure = tuple(sorted(measure))
+                measure_marginal = self.dp_marginal_list(self.data, self.domain, [measure],self.privacy_budget4/np.sqrt(self.config['ed_step_num']))
+                temp = measure_marginal[measure]
+                if self.gpu:
+                    self.measure[measure] = Factor(temp.domain, temp.values, cp)
+                else:
+                    self.measure[measure] = temp
+                self.measure_set = set(self.measure_set)
+                self.measure_set.add(measure)
+
+                for clique in self.maximal_cliques:
+                    if set(measure) <= set(clique):
+                        self.clique_to_measure[clique].append(measure)
+                        self.measure_to_clique[measure] = clique
+                        break
+    
+    def print_dom(self, measure_list):
+        for measure in measure_list:
+            print(measure, self.domain.project(measure).size())
+
+    # generate all the possible measures
+    def generate_measure_set(self):
+        clique_to_measure = {}
+        for clique in self.maximal_cliques:
+            clique_to_measure[clique] = []
+            print('  generate measure for clique {}, size: {:.2e}'.format(clique, \
+                self.domain.project(clique).size()))
+            temp_clique = [attr for attr in clique if attr < self.attr_num]
+            for length in range(1, self.max_measure_attr_num+1):
+                if length >= len(clique):
+                    break
+                for measure in itertools.combinations(temp_clique, length):
+                    measure = tuple(sorted(measure))
+                    if length == 1:
+                        # Typically, single attribute measure should have no dom constraion as it provides
+                        # the basic description for that dom. However, if the dom of the attribute is 
+                        # very very large compared to theta-useful. The noise of the single attribute measure
+                        # could have a negative effect to the overall parameters. You may want to delete the
+                        # single attribute measure in this case. In our experiment, there is no such phenomena.
+                        clique_to_measure[clique].append(measure)
+                    elif length == 2:
+                        if self.bin_domain.project(measure).size() < self.max_measure_dom_2way:
+                            clique_to_measure[clique].append(measure)
+                    # elif self.domain.project(measure).size() < 10:
+                    elif self.bin_domain.project(measure).size() < self.max_measure_dom_high_way:
+                        clique_to_measure[clique].append(measure)
+        
+
+        # normalize to avoid only consider measures in large cliques
+        # different clique may generate same measure, which is okay since it is important for both cliques.
+        measure_list = []
+        for clique in clique_to_measure:
+            if len(clique_to_measure[clique]) == 0:
+                continue
+            weight = len(clique)**2/len(clique_to_measure[clique])
+            for measure in clique_to_measure[clique]:
+                measure_list.append(tuple([measure, weight]))
+
+        measure_dict = {}
+        for item in measure_list:
+            if item[0] in measure_dict:
+                measure_dict[item[0]] += item[1]
+            else:
+                measure_dict[item[0]] = item[1]
+
+        measure_list = list(measure_dict.items())
+        temp_list = [item[0] for item in measure_list]
+        random.shuffle(temp_list)
+        self.sampled_measure_list = temp_list[:300]
+        # print('measure_list', len(measure_list))
+        # print(measure_list)
+
+        # measure_list = [(6, 9), (11,), (13,), (5, 8), (3, 14), (6, 14), (4, 9), (5, 9, 14), (1, 14), (7, 9, 14),
+        # (1, 5), (4, 14), (10,), (12,), (0,), (2,), (5, 7), (1, 8), (1, 7)]
+        # self.print_dom(measure_list)
+        # measure_list = [(item, 1) for item in measure_list]
+
+        if len(measure_list) < self.de_mesaure_num:
+            if self.config['use_exp_mech'] > 0:
+                total_privacy_budget = tools.privacy_budget(self.config['epsilon']*(1-self.config['use_exp_mech']))
+            else:
+                total_privacy_budget = tools.privacy_budget(self.config['epsilon'])
+            self.de_mesaure_num = len(measure_list)
+            self.marginal_noise = math.sqrt((len(self.measure_set)+self.de_mesaure_num) / self.marginal_distribution_budget)
+            print('  all the measures can be selected')
+            print('  marginal noise:           ', self.marginal_noise)
+            print('  max de measure num        ', self.de_mesaure_num)
+
+        # assign measures to cliques
+        for measure, weight in measure_list:
+            for clique in self.maximal_cliques:
+                if set(measure) <= set(clique):
+                    self.clique_to_measure[clique].append(measure)
+                    self.measure_to_clique[measure] = clique
+                    break
+        return measure_list
+    
+
+    def print_measure(self, print_measure):
+        marginal_dict, partition_func = self.cal_marginal_dict(self.potential, print_measure, to_cpu=False)
+        average = 0
+        for measure in print_measure:
+            bins = self.domain.project(measure).edge()
+            histogram, _ = np.histogramdd(self.data[:, measure], bins=bins)
+
+            value = marginal_dict[measure].values
+            total_variation_distance = np.sum(np.abs(value - histogram)) / 2 / self.noisy_data_num
+            average += total_variation_distance
+        measure_num = len(print_measure)
+        print('  average total variation distance: {:.8f}'.format(average/measure_num))
+
+    # select measures that have large norm
+    def select_measure(self, measure_list, measure_num):
+        print('  ', len(measure_list), measure_num)
+        if measure_num <= 0:
+            return []
+        measure_list = list(measure_list.copy())
+        if measure_num > len(measure_list):
+            return [item[0] for item in measure_list]
+
+        # limit the number of queries to ensure privacy budget is enough
+        # if len(measure_list) > self.config['norm_query_number']:
+        #     weights = [item[1] for item in measure_list]
+        #     query_measure_list = random.choices(measure_list, weights=weights, k=self.config['norm_query_number'])
+        #     query_measure_list = [item[0] for item in query_measure_list]
+        # else:
+        query_measure_list = [item[0] for item in measure_list]
+        query_measure_list = list(set(query_measure_list))
+
+        budget = self.privacy_budget3/self.ed_step_num
+        # self.de_norm1_noise = math.sqrt(len(query_measure_list)/budget)
+        # print('  marginal norm noise:', self.de_norm1_noise)
+
+        # query 1 norm
+        query_result_list = []
+        marginal_dict, partition_func = self.cal_marginal_dict(self.potential, query_measure_list, to_cpu=False)
+        for measure in query_measure_list:
+            # dist, noisy_dist = tools.dp_1norm(self.data, self.domain, measure, marginal_dict[measure], self.de_norm1_noise, to_cpu=False)
+            dist, noisy_dist, distance_ = self.dp_1norm(self.data, self.domain, measure, marginal_dict[measure], budget/np.sqrt(len(query_measure_list)), to_cpu=False)
+            # TVD (1 norm) of marginal is at least this value. Deduct it to compare marginals of different sizes fairly
+            # However, it is not emperically ter in adult dataset. There should be better ways to compare marginal with different size
+            # 1. inherent TVD given by noise. 2. TVD tends to be large if the size of noisy marginal is large.
+            # dist -= self.marginal_noise * self.domain.project(measure).size() / 2 / self.noisy_data_num
+            query_result_list.append([measure, noisy_dist, dist,distance_])
+        query_result_list.sort(key=lambda x: x[1], reverse=True)
+
+        # sort and find measures with maximum 1 norm
+        measure_num = min(measure_num, len(query_result_list))
+        result_list = query_result_list[: measure_num]
+        print('  new selected measure list')
+        for i in range(measure_num):
+            print('   ', result_list[i])
+        result_list = [x[0] for x in result_list]
+
+        print('  consider measure list', len(measure_list))
+        # print(measure_list)
+        new_measure_list = []
+        temp_list = query_measure_list[int(len(query_measure_list)/2):]
+        for item in measure_list:
+            if item[0] not in result_list:
+                if item[0] in temp_list:
+                    new_measure_list.append((item[0], item[1]/2))
+                else:
+                    new_measure_list.append(item)
+
+        # decrease attribute level for measures
+        if self.config['enable_attribute_hierarchy']:
+            new_result_list = []
+            for measure in result_list:
+                new_result_list.append(self.get_measure_with_hierarchy(measure))
+            result_list = new_result_list
+        
+        return result_list, new_measure_list
+
+    def select_measure_exp(self, measure_list, measure_num):
+        if measure_num <= 0:
+            return []
+        measure_list = list(measure_list.copy())
+        if measure_num > len(measure_list):
+            return [item[0] for item in measure_list]
+
+        # limit the number of queries to ensure privacy budget is enough
+        if len(measure_list) > self.config['norm_query_number']:
+            weights = [item[1] for item in measure_list]
+            query_measure_list = random.choices(measure_list, weights=weights, k=self.config['norm_query_number'])
+            query_measure_list = [item[0] for item in query_measure_list]
+        else:
+            query_measure_list = [item[0] for item in measure_list]
+        query_measure_list = list(set(query_measure_list))
+
+        # query 1 norm
+        marginal_dict, partition_func = self.cal_marginal_dict(self.potential, query_measure_list, to_cpu=False)
+        query_measure_list = []
+        query_score_list = []
+        for measure in marginal_dict:
+            # dist, noisy_dist = tools.dp_1norm(self.data, self.domain, measure, marginal_dict[measure], 0, to_cpu=False)
+            dist, noisy_dist = self.dp_1norm(self.data, self.domain, measure, marginal_dict[measure], 0, to_cpu=False)
+            query_measure_list.append(measure)
+            query_score_list.append(dist)
+
+        result_list = []
+        budget = self.config['epsilon']/self.ed_step_num * self.config['use_exp_mech']/measure_num
+        for i in range(measure_num):
+            measure, choice = tools.exponential_mechanism(query_measure_list, query_score_list, budget, 1/2/self.data_num)
+            result_list.append(measure)
+            del query_measure_list[choice]
+            del query_score_list[choice]
+        
+        new_measure_list = []
+        for item in measure_list:
+            if item[0] not in result_list:
+                new_measure_list.append(item)
+        
+        if self.config['enable_attribute_hierarchy']:
+            new_result_list = []
+            for measure in result_list:
+                new_result_list.append(self.get_measure_with_hierarchy(measure))
+            result_list = new_result_list
+        
+        return result_list, new_measure_list    
+    
+
+    def estimate_parameters(self, min_it=0):
+        if self.config['estimation_method'] == 'mirror_descent':
+            self.mirror_descent(min_it)
+        elif self.config['estimation_method'] == 'accelerated_mirror_descent':
+            self.accelerated_mirror_descent()
+        elif self.config['estimation_method'] == 'dual_averaging':
+            self.dual_averaging()
+        else:
+            print('error: invalid estimation method')
+            exit(-1)
+
+    '''
+    self.cal_marginal_dict: no need
+    self.belief_propagation: no need
+    Potential.l2_marginal_loss: no need
+    get_expanded_gradient: no need
+    '''
+
+    def mirror_descent(self, min_it=0):
+        print('mirror descent')
+        potential = self.potential.copy()
+
+        mu = None
+        alpha = 1.0 /self.noisy_data_num ** 2
+        stepsize = lambda t: 2.0*alpha
+
+        mu, partition_func = self.cal_marginal_dict(potential, self.measure_set)
+        if self.gpu:
+            mu = cp.asnumpy(mu)
+
+        ans = Potential.l2_marginal_loss(mu, self.measure)
+        self.iter_num = 1000
+        for it in range(self.iter_num):
+            start_time = time.time()
+            omega, nu = potential, mu
+            curr_loss, gradient = ans
+            alpha = stepsize(it)
+            for i in range(10):
+                expanded_gradient = self.get_expanded_gradient(gradient)
+                potential = omega - alpha * expanded_gradient
+
+                mu, partition_func = self.cal_marginal_dict(potential, self.measure_set)
+                if self.gpu:
+                    mu = cp.asnumpy(mu)
+                ans = Potential.l2_marginal_loss(mu, self.measure)
+                if curr_loss - ans[0] >= 0.5*alpha*gradient.dot(nu-mu):
+                    break
+                alpha *= 0.5
+            if np.isnan(curr_loss):
+                break
+
+            if it % self.config['print_interval'] == 0 or it == self.iter_num-1:
+                print('    it: {}/{} loss: {:.4e} time: {:.2f}'.format(it, self.iter_num, curr_loss, time.time()-start_time))
+                self.theoretic_loss = self.get_theoretic_loss()
+                if curr_loss < self.config['convergence_ratio']*self.theoretic_loss and it > min_it:
+                    break
+
+        self.average_it += it
+        self.partition_func = partition_func
+        self.potential = potential
+        self.marginal = mu
+
+    def get_expanded_gradient(self, gradient):
+        if self.gpu:
+            xp = cp
+        else:
+            xp = np
+        expanded_gradient = Potential({clique: Factor.zeros(\
+            self.domain.project(clique), xp) for clique in self.maximal_cliques})
+        for marginal in gradient:
+            clique = self.measure_to_clique[marginal]
+            expanded_gradient[clique] += gradient[marginal]
+        return expanded_gradient
+
+    # get entropy of current model
+    def get_entropy(self):
+        marginal, partition_func = self.belief_propagation(self.potential) 
+        ans = - self.potential.dot(1/self.noisy_data_num * marginal) + partition_func
+        return ans.item()
+
+    def cal_marginal_dict(self, potential, measure_set, to_cpu=False):
+        maximal_clique_marginal, partition_func = self.belief_propagation(potential)
+        if to_cpu:
+            for clique in maximal_clique_marginal:
+                maximal_clique_marginal[clique] = maximal_clique_marginal[clique].to_cpu()
+        marginal_dict = {}
+        for marginal in measure_set:
+            clique_factor = maximal_clique_marginal[self.measure_to_clique[marginal]]
+            marginal_fact = clique_factor.project(marginal)
+            marginal_dict[marginal] = marginal_fact
+        return Potential(marginal_dict), partition_func
+
+    # calculate marginals of maximal cliques
+    def belief_propagation(self, potential):
+        belief = Potential({clique: potential[clique].copy() for clique in self.maximal_cliques})
+
+        sent_message = dict()
+        for clique1, clique2 in self.message_order:
+            separator = set(clique1) & set(clique2)
+            if (clique2, clique1) in sent_message:
+                message = belief[clique1] - sent_message[(clique2, clique1)]
+            else:
+                message = belief[clique1]
+            message = message.logsumexp(separator)
+            belief[clique2] += message
+
+            sent_message[(clique1, clique2)] = message
+
+        partition_func = belief[self.maximal_cliques[0]].logsumexp()
+        for clique in self.maximal_cliques:
+            belief[clique] += np.log(self.noisy_data_num) - partition_func
+            belief[clique] = belief[clique].exp()
+
+        return belief, partition_func
+
+    def get_Lipschitz_constant(self):
+        L = {clique: 0 for clique in self.maximal_cliques}
+        for measure in self.measure_set:
+            clique = self.measure_to_clique[measure]
+            L[clique] += self.domain.project(clique).size() / self.domain.project(measure).size() / len(self.measure_set)
+        self.L = max(L.values())
+        return self.L
+
+    @staticmethod
+    def save_model(model, path):
+        with open(path, 'wb') as out_file:
+            pickle.dump(model, out_file)
+
+    @staticmethod
+    def load_model(path):
+        with open(path, 'rb') as out_file:
+            return pickle.load(out_file)
+
+    # generate synthetic data according to potentials
+    def synthetic_data(self, path):
+        data = np.zeros((self.noisy_data_num, len(self.domain)), dtype=int)
+        self.df = pd.DataFrame(data, columns=self.domain.attr_list)
+        # belief propagation to get clique marginals and
+        # generate data conditioned on separators
+        clique_marginal, _ = self.belief_propagation(self.potential)
+        finished_attr = set()
+        separator = set()
+        if len(self.maximal_cliques) == 1:
+            cond_attr = []
+            clique = self.maximal_cliques[0]
+            for attr in clique:
+                print('  cond_attr: {}, attr: {}'.format(cond_attr, attr))
+                self.pandas_generate_cond_column_data(clique_marginal[clique], cond_attr, attr)
+                finished_attr.add(attr)
+                cond_attr.append(attr)
+        else:
+            for start, clique in nx.dfs_edges(self.junction_tree):
+                if len(finished_attr) == 0:
+                    cond_attr = []
+                    for attr in start:
+                        print('  cond_attr: {}, attr: {}'.format(cond_attr, attr))
+                        self.pandas_generate_cond_column_data(clique_marginal[start], cond_attr, attr)
+                        finished_attr.add(attr)
+                        cond_attr.append(attr)
+
+                separator = set(start) & set(clique)
+                print('start: {}, clique: {}, sep: {}'.format(start, clique, separator))
+                cond_attr = list(separator)
+                for attr in clique:
+                    if attr not in finished_attr:
+                        print('  cond_attr: {}, attr: {} {}/{}'.format(cond_attr, attr, len(finished_attr), len(self.domain.attr_list)))
+                        self.pandas_generate_cond_column_data(clique_marginal[clique], cond_attr, attr)
+                        finished_attr.add(attr)
+                        cond_attr.append(attr)
+
+        if self.config['enable_attribute_hierarchy']:
+            data_list = self.map_data_with_hierarchy_back(self.df.to_numpy())
+        else:
+            if self.config['attribute_binning'] and not self.config['combine_MRF']:
+                for attr in self.attr_index:
+                    temp = self.df.loc[:, attr].copy()      
+                    self.df.loc[:, attr] = self.uniform_sampling(self.binning_map, temp, attr, self.config['uniform_sampling'])
+            data_list = list(self.df.to_numpy())
+        if self.config['private_method'] == 'latent_mrf':
+            data_list, self.attr_num = self.generate_data(data_list)
+        tools.write_csv(data_list, list(range(self.attr_num)), path)
+        return data_list
+    
+
+    # generate a column according to marginal distribution and conditions using pandas
+    def pandas_generate_cond_column_data(self, clique_factor, cond, target):
+        clique_factor = clique_factor.moveaxis(self.domain.attr_list)
+        if len(cond) == 0:
+            prob = clique_factor.project(target).values
+            self.df.loc[:, target] = tools.generate_column_data(prob, self.noisy_data_num)
+        else:
+            marginal_value = clique_factor.project(cond + [target])
+            attr_list = marginal_value.domain.attr_list.copy()
+            attr_list.remove(target)
+            cond = attr_list.copy()
+            attr_list.append(target)
+            marginal_value = marginal_value.moveaxis(attr_list).values
+            if self.config['enable_attribute_hierarchy']:
+                attrs = [attr for attr in attr_list if attr < self.attr_num and self.attr_to_subattr[attr] in attr_list]
+                self.set_zero_for_hierarchy(marginal_value, attr_list, attrs)
+            def foo(group):
+                idx = group.name
+                # idx = int(idx)
+                vals = tools.generate_column_data(marginal_value[idx], group.shape[0])
+                # target = str(target)
+                group[target] = vals
+                return group
+            self.df = self.df.groupby(list(cond),as_index=False).apply(foo)
+
+        # if self.config['attribute_binning']:
+        #     temp = self.df.loc[:, target].copy()      
+        #     self.df.loc[:, target] = self.uniform_sampling(self.binning_map, temp, target)
+
+    
+    def uniform_sampling(self, binning_map, data, target, uniform=False):
+        # cut = binning_map[target]['cut']
+        # max = binning_map[target]['domain_change'][0]
+        binning_num = self.config['binning_num']
+        if binning_map['domain_change'][target][0] <= binning_num:
+            return data
+        else:
+            data = pd.Series(data)
+            for i in range(binning_num):
+                index_i = data[data == i].index
+                # index_1 = data[data == 1].index
+                values = list(binning_map['bin_2_original'][target][i][0])
+                if len(values) > 0:
+                    if uniform:
+                        num_choice = binning_map['bin_2_original'][target][i][0].shape[0]
+                        pro_ = 1./num_choice
+                        prob = np.array([pro_ for i in range(num_choice)])
+                    else:
+                        prob = binning_map['bin_2_original'][target][i][1]
+                    data[index_i] = np.random.choice(values, p = prob.ravel(),size=len(index_i))
+                # data[index_1] = np.random.randint(cut, max+1, size=len(index_1))
+            return data
+
+
+    def dp_marginal_list(self, data, domain, marginal_list, privacy_budget, return_factor=True,):
+        marginal_dict = {}
+        for marginal in marginal_list:
+            if len(marginal) == 0:
+                continue
+            else:
+                temp_domain = self.domain.project(marginal)
+                histogram, _ = np.histogramdd(data[:, marginal], bins=temp_domain.edge())
+                if self.config['private_method'] == 'scalar_product':
+                    noisy_histogram = histogram + np.random.laplace(0, 1/privacy_budget, histogram.shape)
+                elif self.config['private_method'] == 'latent_mrf':
+                    noisy_histogram = self.DLPP_intersection(marginal,privacy_budget)
+                else:
+                    noisy_histogram = self.intersection(marginal)
+                noisy_histogram[noisy_histogram<0] = 0
+                if return_factor:
+                    fact = Factor(temp_domain,noisy_histogram)
+                    marginal_dict[tuple(marginal)] = fact
+                else:
+                    marginal_dict[tuple(marginal)] = noisy_histogram
+        return marginal_dict
+    
+    
+
+    
+    def dp_1norm(self, data, domain, index_list, marginal, budget, to_cpu=False):
+        bins = domain.project(index_list).edge()
+        histogram, _ = np.histogramdd(data[:, index_list], bins=bins)
+        if self.config['private_method'] == 'scalar_product':
+            noisy_histogram = histogram + np.random.laplace(0, 1/budget, histogram.shape)
+        elif self.config['private_method'] == 'latent_mrf':
+            noisy_histogram = self.DLPP_intersection(index_list,budget)
+        else:
+            noisy_histogram = self.intersection(index_list)
+        to_cpu = False
+        if self.gpu and not to_cpu:
+            value = cp.asnumpy(marginal.values)
+            noisy_histogram = cp.asnumpy(noisy_histogram)
+            histogram = cp.asnumpy(histogram)
+        else:
+            value = marginal.values
+        result1 = np.sum(np.abs(value - histogram))/ 2 /self.noisy_data_num
+        result2 = np.sum(np.abs(value - noisy_histogram))/ 2 /self.noisy_data_num
+        result3 = np.sum(np.abs(histogram - noisy_histogram))/ 2 /self.noisy_data_num
+        return result1, result2,result3
+
+
+
+
+    ##########################################################################  intersection
+    # def intersection(self,index_list):
+    #     set_index = set(index_list)
+    #     if self.config['private_method'] == 'scalar_product':
+    #         marginal = tuple(index_list)
+    #         temp_domain = self.domain.project(marginal)
+    #         histogram, _ = np.histogramdd(self.data[:, marginal], bins=temp_domain.edge())
+    #         # self.ldp_intersection_ca(tuple(index_list))
+    #         return histogram
+    #     else:
+    #         set_attr_alice = set(self.mrf_msg['alice']['attr_list'])
+    #         set_attr_bob = set(self.mrf_msg['bob']['attr_list'])
+
+
+    #     return histogramdd
+
+    def intersection(self,index_list):
+        set_index = set(index_list)
+        # if self.config['private_method'] == 'fmsketch':
+        #     histogramdd = self.fm_intersection_ca(tuple(index_list))
+        #     return histogramdd
+        # elif self.config['private_method'] == 'random_response':
+        #     histogramdd = self.ldp_intersection_ca(tuple(index_list))
+        #     return histogramdd
+        if self.config['private_method'] == 'scalar_product':
+            marginal = tuple(index_list)
+            temp_domain = self.domain.project(marginal)
+            histogram, _ = np.histogramdd(self.data[:, marginal], bins=temp_domain.edge())
+            # self.ldp_intersection_ca(tuple(index_list))
+            return histogram
+        else:
+            set_attr_alice = set(self.mrf_msg['alice']['attr_list'])
+            set_attr_bob = set(self.mrf_msg['bob']['attr_list'])
+            # ,set(self.mrf_msg[1][1])]
+            cons_dict = {}
+            lap_dict = {}
+            car_dict = {}
+            mrf_dict = {}
+            if set_index.issubset(set_attr_alice):
+                carest_histogramdd = 0
+                if self.config['private_method'] == 'fmsketch':
+                    carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
+                else:
+                    carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
+                car_dict[tuple(index_list)] = carest_histogramdd
+                cons_dict['carest'] = car_dict
+                mrf_histogramdd = self.mrf_msg['alice']['mrf'].cal_marginal_dict(self.mrf_msg['alice']['mrf'].potential, [tuple(index_list)])[0][tuple(index_list)].values
+                # mrf_histogramdd = self.reduce_dimension(tuple(set_index),mrf_histogramdd, self.binning_map['bin_2_original'],carest_histogramdd)
+                # mrf_dict[tuple(set_index)] = mrf_histogramdd
+                # cons_dict['mrf'] = mrf_dict
+                # if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
+                #     for attr in set_index:
+                #         lap_histogramdd = self.binning_map['laplace_counts'][attr]
+                #         lap_dict[tuple([attr])] = lap_histogramdd
+                #     cons_dict['laplace'] = lap_dict
+                # carest = self.enforce_consistency(cons_dict,tuple(index_list))
+                return mrf_histogramdd
+            elif set_index.issubset(set_attr_bob):
+                correct = len(self.mrf_msg['alice']['attr_list'])
+                correct_index_list_tuple=tuple([ind-correct for ind in index_list])
+                # carest_histogramdd = 0
+                # if self.config['private_method'] == 'fmsketch':
+                #     carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
+                # else:
+                #     carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
+                # car_dict[tuple(index_list)] = carest_histogramdd
+                # cons_dict['carest'] = car_dict
+                mrf_histogramdd = self.mrf_msg['bob']['mrf'].cal_marginal_dict(self.mrf_msg['bob']['mrf'].potential, \
+                    [correct_index_list_tuple])[0][correct_index_list_tuple].values
+                # mrf_histogramdd = self.reduce_dimension(tuple(set_index),mrf_histogramdd, self.binning_map['bin_2_original'],carest_histogramdd)
+                # mrf_dict[tuple(set_index)] = mrf_histogramdd
+                # cons_dict['mrf'] = mrf_dict
+                # if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
+                #     for attr in set_index:
+                #         lap_histogramdd = self.binning_map['laplace_counts'][attr]
+                #         lap_dict[tuple([attr])] = lap_histogramdd
+                #     cons_dict['laplace'] = lap_dict
+                # carest = self.enforce_consistency(cons_dict,tuple(index_list))
+                # return carest
+                return mrf_histogramdd
+            else:
+                correct = len(self.mrf_msg['alice']['attr_list'])
+                set_alice = list()
+                set_bob = list()
+                for attr in index_list:
+                    if attr in self.mrf_msg['alice']['attr_list']:
+                        set_alice.append(attr)
+                    else:
+                        set_bob.append(attr)
+
+                carest_histogramdd = 0
+                if self.config['private_method'] == 'fmsketch':
+                    carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
+                else:
+                    carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
+                if self.config['attribute_binning']:
+                    carest_histogramdd = self.transform_2_high_dim(index_list, carest_histogramdd)
+                car_dict[tuple(index_list)] = carest_histogramdd
+                cons_dict['carest'] = car_dict
+                
+                ###local mrf estimate the marginal
+                alice_dict = self.mrf_msg['alice']['mrf'].cal_marginal_dict(self.mrf_msg['alice']['mrf'].potential, [tuple(set_alice)])[0]
+                histogramdd_temp_alice = alice_dict[tuple(set_alice)].values
+                # histogramdd_temp_alice = self.reduce_dimension(tuple(set_alice),histogramdd_temp_alice, self.binning_map['bin_2_original'],carest_histogramdd)
+                bob_dict = self.mrf_msg['bob']['mrf'].cal_marginal_dict(self.mrf_msg['bob']['mrf'].potential, [tuple([ind-correct for ind in set_bob])])[0]
+                histogramdd_temp_bob = bob_dict[tuple([ind-correct for ind in set_bob])].values
+                # histogramdd_temp_bob = self.reduce_dimension(tuple(set_alice),histogramdd_temp_alice, self.binning_map['bin_2_original'],carest_histogramdd)
+                
+                mrf_dict[tuple(set_alice)] =  histogramdd_temp_alice
+                mrf_dict[tuple(set_bob)] =  histogramdd_temp_bob
+                cons_dict['mrf'] = mrf_dict
+                ###laplace estimate the marginal
+                if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
+                    for attr in set_index:
+                        lap_histogramdd = self.binning_map['laplace_counts'][attr]
+                        lap_dict[tuple([attr])] = lap_histogramdd
+                    cons_dict['laplace'] = lap_dict
+                if self.config['consistency'] == True:
+                    carest_histogramdd = self.enforce_consistency(cons_dict,tuple(index_list))
+                return carest_histogramdd
+                
+
+
+              
+            #     if self.config['combine_method'] == 'consis_loss':
+            #         consistency_loss = 1e10
+            #         optimal_marginal = list()
+            #         hist_temp_list = list()
+            #         for marginal in histogram_dict:
+            #             table = histogram_dict[marginal]
+            #             hist_temp = self.combine_marginal(index_list, set_alice, set_bob, histogramdd_temp_alice,histogramdd_temp_bob,marginal,table)
+            #             consistency_loss_temp = self.consistency_loss(index_list, hist_temp, histogram_dict)
+            #             if consistency_loss_temp < consistency_loss:
+            #                 optimal_marginal.append(marginal)
+            #                 hist_temp_list.append(hist_temp)
+            #                 consistency_loss = consistency_loss_temp
+            #         histogramdd = hist_temp_list[-1]
+            #     else:
+            #         R_score = 0
+            #         optimal_attr_pair = []
+            #         for attr1 in set_alice:
+            #             for attr2 in set_bob:
+            #                 R_score_temp = self.R_score[(attr1, attr2)]
+            #                 # dp_TVD([attr1, attr2])
+            #                 if R_score_temp >= R_score:
+            #                     optimal_attr_pair.append((attr1, attr2))
+            #                     R_score = R_score_temp
+            #         marginal = optimal_attr_pair[-1]
+            #         table = histogram_dict[marginal]
+            #         histogramdd = self.combine_marginal(index_list, set_alice, set_bob, histogramdd_temp_alice,histogramdd_temp_bob,marginal,table)
+            # domain_ = self.domain.project(index_list)
+            # bins = domain_.edge()
+            # histogram, _ = np.histogramdd(self.data[:, index_list], bins=bins)
+            # histogramdd[histogramdd<1]=0
+            # return histogramdd
+        
+
+    ############################################################### enforce consistency
+
+    def combine_marginal(self,index_list, set_alice, set_bob, histogramdd_temp_alice,histogramdd_temp_bob,marginal,marginal_table):
+        #merge multiple 2-way marginal to high-way marginal
+        attr_0 = marginal[0]
+        attr_1 = marginal[1]
+        ind_0 = set_alice.index(attr_0)
+        ind_1 = set_bob.index(attr_1)
+
+        #正则化
+        histogramdd_temp_alice[histogramdd_temp_alice<0] = 0
+        histogramdd_temp_bob[histogramdd_temp_bob<0] = 0
+        marginal_table[marginal_table<0] = 0
+
+        histogramdd_temp_alice = histogramdd_temp_alice*(self.noisy_data_num/np.sum(histogramdd_temp_alice))
+        histogramdd_temp_bob = histogramdd_temp_bob*(self.noisy_data_num/np.sum(histogramdd_temp_bob))
+        marginal_table = marginal_table*(self.noisy_data_num/np.sum(marginal_table))
+
+        prob_alice = histogramdd_temp_alice / self.noisy_data_num
+        prob_bob = histogramdd_temp_bob / self.noisy_data_num
+        prob_cross = marginal_table / self.noisy_data_num
+
+        hist_shape = self.domain.project(index_list).shape
+        histogram = np.zeros(hist_shape)
+        prob = np.zeros(hist_shape)
+        iter_list = [[0,1] for attr in index_list]
+        for i in itertools.product(*iter_list):
+            index_alice = tuple(i[0:len(set_alice)])
+            index_bob = tuple(i[len(set_alice):])
+            index_cross = (i[ind_0], i[ind_1+len(set_alice)])
+            norm_term_cross = prob_cross[(index_cross[0],0)]+prob_cross[(index_cross[0],1)]
+            all_dims_bob = list(range(prob_bob.ndim))
+            all_dims_bob.remove(ind_1)
+            norm_term_bob = np.sum(prob_bob,axis=tuple(all_dims_bob))[i[ind_1+len(set_alice)]]
+            prob_temp = prob_alice[index_alice] * prob_cross[index_cross]/norm_term_cross* prob_bob[index_bob]/norm_term_bob
+            # prob_temp_alice_major = prob_alice[index_alice] * prob_cross[index_cross]/norm_term_cross* prob_bob[index_bob]/norm_term_bob
+            # prob_temp_bob_major = prob_alice[index_alice] * prob_cross[index_cross]/norm_term_cross* prob_bob[index_bob]/norm_term_bob
+            prob[i] = prob_temp
+        sum_ = np.sum(prob)
+        prob = prob/sum_
+        histogram = self.noisy_data_num*prob
+        return histogram
+    
+
+
+    def consistency_loss(self,index_list, hist, histogram_dict):
+        #compute the consistency loss
+        loss = 0
+        for marginal in histogram_dict:
+            all_dims_temp = list(range(hist.ndim))
+            axis_0 = list(index_list).index(marginal[0])
+            axis_1 = list(index_list).index(marginal[1])
+            all_dims_temp.remove(axis_0)
+            all_dims_temp.remove(axis_1)
+            #数组沿着特定的维度进行reduce
+            hist_temp = np.sum(hist, axis=tuple(all_dims_temp))
+            loss += np.sum(np.abs(hist_temp - histogram_dict[marginal]))  #计算L1-loss的函数
+        return loss
+    
+    def reduce_dimension(self, index_list, mrf_histogramdd, bin_2_original, histogram_shape):
+        ''' 将从mrf中得到的高维表格基于分箱的attr对应关系进行降维合并,以便进行consistency '''
+        domain_list = [[i for i in range(self.domain.dict[attr]['domain'])] for attr in index_list]
+        histogramdd = np.zeros_like(histogram_shape)
+        for index in itertools.product(*domain_list):
+            involve_list = []
+            for attr, bin_value in enumerate(index):
+                involve_list.append(list(bin_2_original[attr][bin_value][0]))
+            for ind in itertools.product(*involve_list):
+                histogramdd[index] += mrf_histogramdd[ind]
+        return histogramdd
+
+    def transform_2_high_dim(self,index_list, carest_histogramdd):
+        bin_2_original = self.binning_map['bin_2_original']
+        bin_domain_list = [[i for i in range(self.bin_domain.dict[attr]['domain'])] for attr in index_list]
+        domain_list = [[i for i in range(self.domain.dict[attr]['domain'])] for attr in index_list]
+        domain_shape = [self.domain.dict[attr]['domain'] for attr in index_list]
+        histogramdd = np.ones(shape = tuple(domain_shape))
+        if self.config['uniform_sampling']:
+            for bin_tuple in itertools.product(*bin_domain_list):
+                iter_list = []
+                temp_count = 1
+                for attr,value in enumerate(list(bin_tuple)):
+                    value_list = list(bin_2_original[index_list[attr]][value][0])
+                    value_list = [int(value) for value in value_list]
+                    iter_list.append(value_list)
+                    temp_count *= len(value_list)
+                for ori_tuple in itertools.product(*iter_list):
+                    histogramdd[tuple(ori_tuple)] = carest_histogramdd[tuple(bin_tuple)]/temp_count
+        else:
+            for bin_tuple in itertools.product(*bin_domain_list):
+                iter_list = []
+                temp_count = 1
+                for attr,value in enumerate(list(bin_tuple)):
+                    value_list = list(bin_2_original[index_list[attr]][value][0])
+                    prob_list = list(bin_2_original[index_list[attr]][value][1])
+                    value_list = [(int(value_list[i]),prob_list[i]) for i in range(len(value_list))]
+                    iter_list.append(value_list)
+                    # temp_count *= len(value_list)
+                for ori_tuple in itertools.product(*iter_list):
+                    index = tuple([ele[0] for ele in list(ori_tuple)])
+                    prob = self.multiplyList([ele[1] for ele in list(ori_tuple)])
+                    histogramdd[tuple(index)] = carest_histogramdd[tuple(bin_tuple)]*prob
+        return histogramdd
+
+
+    def enforce_consistency(self, cons_dict,mar):
+        marginal_dict_temp = cons_dict.copy()
+        # for source in marginal_dict_temp:
+        #     for m in marginal_dict_temp[source]:
+        domain_ = self.domain.project(mar)
+        histogram, _ = np.histogramdd(self.data[:, mar], bins=domain_.edge())
+        # marginal_dict_temp[source][m] = marginal_dict_temp['carest'][mar]/np.sum(marginal_dict_temp[source][m])
+        loss = np.sum(np.abs(histogram - marginal_dict_temp['carest'][mar]))
+        for i in range(4):
+            for attr in list(mar):
+                temp_dict = {}
+                table = []
+                for source in marginal_dict_temp:
+                    source_dict = {}
+                    for marginal in marginal_dict_temp[source]:
+                        if attr in marginal:
+                            marginal_table = np.array(marginal_dict_temp[source][marginal])
+                            ind = list(marginal).index(attr)
+                            all_dims = list(range(marginal_table.ndim))
+                            all_dims.remove(ind)
+                            marginalized = np.sum(marginal_table,axis=tuple(all_dims))
+                            source_dict[marginal] = (ind, marginal_table, marginalized)
+                            table.append(marginalized)
+                    temp_dict[source] = source_dict
+                if self.config['weight_consis']:
+                    #!!!待补充
+                    average = np.mean(np.array(table), axis=0)
+                else:
+                    average = np.mean(np.array(table), axis=0)
+                for source in marginal_dict_temp:
+                    for marginal in marginal_dict_temp[source]:
+                        if attr in marginal:
+                            list_domain = [self.domain.dict[attr]['domain'] for attr in marginal]
+                            impact_cells =self.multiplyList(list_domain)/self.domain.dict[attr]['domain']
+                            # diff是1怎么计算的
+                            diff = (average - temp_dict[source][marginal][2])/impact_cells
+                            temp = temp_dict[source][marginal][1].copy()
+                            ind = temp_dict[source][marginal][0]
+                            for i in range(self.domain.dict[attr]['domain']):
+                                temp[(slice(None),)*ind+(i,)] += diff[i]
+                                # temp[(slice(None),)*ind+(1,)] += diff[1]
+                            temp[temp<0] = 0
+                            temp = temp/np.sum(temp)
+                            marginal_dict_temp[source][marginal] = temp*self.noisy_data_num
+        # temp_loss = 0
+        # for source in marginal_dict_temp:ß
+            # dic = {}
+            # for marginal in marginal_dict_temp:
+                # temp = marginal_dict_temp[source][marginal]*self.noisy_data_num
+        # domain_ = self.domain.project(mar)
+        # histogram, _ = np.histogramdd(self.data[:, mar], bins=domain_.edge())
+        temp_loss = np.sum(np.abs(marginal_dict_temp['carest'][mar]-histogram))
+        return marginal_dict_temp['carest'][mar]
+    
+
+
+    #####################################################fmsketch-based counting
+    def set_k_p_min(self, epsilon, delta, m, gamma):
+        """A helper function for computing k_p and eta."""
+        if not 0 < epsilon < float('inf') or not 0 < delta < 1:
+            k_p = 0
+            alpha_min = 0
+        else:
+            eps1 = epsilon / 4 / np.sqrt(m * np.log(1 / delta))
+            k_p = np.ceil(1 / (np.exp(eps1) - 1))
+            alpha_min = np.ceil(-np.log(1 - np.exp(-eps1)) / np.log(1 + gamma))
+        return k_p, alpha_min
+
+
+
+    def one_round_intersection_alpha(self, index_list, idx):
+        sketch = []
+        for i in range(len(index_list)):
+            sketch.append(self.fmsketches[idx][index_list[i]]['private_statistics'])
+        cartesian = list(itertools.product(*sketch))
+        return [np.max(c) for c in cartesian]
+
+
+    
+    def fm_intersection_ca(self, index_list):
+        m = self.config['m']
+        gamma = self.config['gamma']
+        domain = self.bin_domain
+
+        num_intersections = np.product([domain.dict[index_list[i]]['domain'] for i in range(len(index_list))])
+        all_sketches = np.zeros(shape=(m, num_intersections))
+
+        for idx in range(m):
+            all_sketches[idx] =  self.one_round_intersection_alpha(index_list, idx)
+        debias = 0.7213 / (1 + 1.079 / m)
+     
+        # epsilon, delta = priv_config['eps'], priv_config['delta']
+        domain_size = domain.dict[index_list[0]]['domain']
+        c = len(index_list)*(domain_size-1)
+        # len(splits) * (len(splits[0]) - 1)
+        k_p, _ = self.set_k_p_min(self.eps, 1/self.noisy_data_num, m, gamma)
+        # the offset (k_p) may need to be revised, because here we are doing the complementary
+        raw_comlementary_union = m / np.sum(np.power(1 + gamma, -all_sketches), axis=0) * debias - k_p * c
+        # print(k_p, len(splits))
+        # print(raw_comlementary_union)
+        estimate = self.noisy_data_num - raw_comlementary_union
+        estimate[estimate<0] = 10
+        estimate = estimate * self.noisy_data_num/np.sum(estimate)
+        histogram = self.clean_intersection_ca(index_list)
+        shape = tuple([domain.dict[index_list[i]]['domain'] for i in range(len(index_list))])
+        DP_FM_histogram = estimate.reshape(shape)
+        if self.config['uniform_corre']:
+            DP_FM_histogram = np.zeros(shape)
+            ele = np.round(self.noisy_data_num/num_intersections)
+            DP_FM_histogram[DP_FM_histogram==0] = ele
+        # print(f"DP estimate: {estimate}")
+        return DP_FM_histogram
+    
+
+    def clean_intersection_ca(self, attr_pair):
+        domain = self.domain.project(attr_pair)
+        bins = domain.edge()
+        histogram, _= np.histogramdd(self.data[:, attr_pair], bins=bins)
+        return histogram
+    
+
+    def clean_histogram_ca(self, attr):
+        temp_domain = self.domain.project([attr])
+        temp_index_list = temp_domain.attr_list
+        histogram, _= np.histogramdd(self.data[:, temp_index_list], bins=temp_domain.edge())
+        return histogram
+
+
+    def fm_histogram_ca(self, attr):
+        m = self.config['m']
+        gamma = self.config['gamma']
+        c = self.domain.dict[attr]['domain']-1
+        one_way_sketches = []
+        for idx in range(m):
+            one_way_sketches.append(self.fmsketches[idx][attr]['private_statistics'])
+        debias = 0.7213 / (1 + 1.079 / m)
+        k_p, _ = self.set_k_p_min(self.eps, 1/self.noisy_data_num, m, gamma)
+        complementary_estimate = m / np.sum(np.power(1 + gamma, -np.array(one_way_sketches)), axis=0) * debias - c*k_p
+        estimate = self.noisy_data_num - complementary_estimate
+        estimate[estimate< 0] = 0
+        estimate  = estimate * self.noisy_data_num/np.sum(estimate)
+        clean_estimate = self.clean_histogram_ca(attr)
+            # one_ways.append(raw_estimate)
+        return estimate
+
+
+    
+
+    
+    ########################################### compute the noisy R-scores based
+    def dp_TVD(self, index_list):
+        domain = self.domain
+        TVD_map = {}
+        if not isinstance(index_list, tuple):
+            index_list = tuple(sorted(index_list))
+        if index_list not in TVD_map:
+            domain = domain.project(index_list)
+            histogram = self.private_statistics['intersection'][tuple(index_list)]
+            fact1 = Factor(domain, histogram, np)
+            temp_domain = domain.project([index_list[0]])
+            histogram= self.private_statistics['histogram'][index_list[0]]
+            fact2 = Factor(temp_domain, histogram, np)
+            temp_domain = domain.project([index_list[1]])
+            histogram= self.private_statistics['histogram'][index_list[1]]
+            fact3 = Factor(temp_domain, histogram, np)
+            fact4 = fact2.expand(domain) * fact3.expand(domain) / self.noisy_data_num
+            TVD = np.sum(np.abs(fact4.values - fact1.values)) / 2 / self.noisy_data_num
+            if self.gpu:
+                TVD = TVD.item()
+        return TVD
+    
+
+    ################################################################## rr-based counting
+    def rr_histogram_ca(self, rr_data, index_list):
+        temp_domain = self.bin_domain.project(index_list)
+        histogram, _= np.histogramdd(rr_data[:, index_list], bins=temp_domain.edge())
+        return histogram
+    
+    
+    def multiplyList(self,myList):
+        result = 1
+        for x in myList:
+            result = result * x  
+        return result
+    
+    def cartesian_to_index(self, combine, domain_list):
+        idx = 0
+        total = len(combine)
+        for i, e in enumerate(combine):
+            temp = self.multiplyList(domain_list[i+1:])
+            idx += e * temp
+        return idx
+
+    def index_to_cartesian(self, idx, domain_list):
+        tmp = idx
+        catesian = [0] * len(domain_list)
+        i = len(domain_list) - 1
+        while tmp > 0:
+            tmp, mod = divmod(tmp, domain_list[i])
+            catesian[i] = mod
+            i -= 1
+        return catesian
+    
+
+    def ldp_intersection_ca(self, index_list):
+        # index_list = self.attr_list
+        # print(self.data[0,:])
+        intersection = self.rr_histogram_ca(self.bin_data, index_list)
+        from functools import partial
+        def flatten(x):
+            original_shape = x.shape
+            return x.flatten(), partial(np.reshape, newshape=original_shape)
+        adjusted, unflatten = flatten(intersection)
+        # adjusted = np.array(intersection_counts)
+        all_combines = [list(range(self.bin_domain.dict[attr]['domain'])) for attr in index_list]
+        all_combines = list(itertools.product(*all_combines))
+        #todo: adapting to the cases where domain sizes of attrs are different
+        domain_list = [self.bin_domain.dict[index_list[i]]['domain'] for i in range(len(index_list))]
+        # intersection_num = np.power(domain_size, len(index_list))
+        intersection_num = self.multiplyList(domain_list)
+        eps = self.eps
+        p_list = []
+        q_list = []
+        for domain_size in domain_list:
+            if domain_size > 3 * int(round(np.exp(eps))) + 2:
+                g = int(round(np.exp(eps))) + 1
+                p = np.exp(eps) / (np.exp(eps) + g - 1)
+                q = 1.0 / (np.exp(eps) + g - 1)
+            else:
+                p = np.exp(eps) / (np.exp(eps) + domain_size - 1)
+                q = 1.0 / (np.exp(eps) + domain_size - 1)
+            p_list.append(p)
+            q_list.append(q)
+
+        # generate forward probability matrix
+        
+        # max_idx = self.multiplyList(domain_list)
+        forward_probs = np.ones(shape=(intersection_num, intersection_num))
+        for combine in all_combines:
+            idx1 = self.cartesian_to_index(combine, domain_list)
+            for idx2 in range(idx1, intersection_num):
+                inner_combine = self.index_to_cartesian(idx2, domain_list)
+                for i in range(len(combine)):
+                    if inner_combine[i] == combine[i]:
+                        forward_probs[idx1, idx2] *= p_list[i]
+                        # forward_probs[idx2, idx1] *= p_list[i]
+                    else:
+                        forward_probs[idx1, idx2] *= q_list[i]
+                        # forward_probs[idx2, idx1] *= q_list[i]
+                forward_probs[idx2, idx1] = forward_probs[idx1, idx2]
+                # diff = np.count_nonzero(np.array(combine) != np.array(inner_combine))
+                # forward_probs[idx1, idx2] = np.power(q, diff) * np.power(p, len(index_list) - diff)
+                # forward_probs[idx2, idx1] = np.power(q, diff) * np.power(p, len(index_list)- diff)
+        # compute unbiased frequencies
+        inv_prob = np.linalg.inv(forward_probs)
+        # todo: debug
+        # print(f"******* sizes: {inv_prob.shape}, {adjusted.shape}")
+        # histogram = self.clean_intersection_ca(index_list)
+        adjusted = np.matmul(inv_prob, adjusted)
+        # logging.info(f"sum of adjust {np.sum(adjusted)}")
+        adjusted[adjusted < 0] = 0
+        adjusted = adjusted/np.sum(adjusted)*len(self.data)
+
+        # self.private_statistics = unflatten(adjusted)
+        return unflatten(adjusted)
+
+
+
+    def generate_data(self, latent_data):
+        Y = self.private_statistics['Y']
+        G = self.private_statistics['G']
+        pg_dict = self.private_statistics['pg_dict']
+        pyg_dict = self.private_statistics['pyg_dict']
+        py_dict = self.private_statistics['py_dict']
+        attr_num = 0
+        for group in G:
+            attr_num += len(group)
+        attr_list = [str(attr) for attr in range(attr_num)]
+        syn_data = pd.DataFrame(columns = attr_list)
+        
+        pgy_dict = {}
+        for latent_attr in Y:
+            pgy_dict[latent_attr] = {}
+            for latent_attr_value in range(2):
+                pgy_dict[latent_attr][latent_attr_value] = {}
+                group_value_list = [[0,1] for i in range(len(G[latent_attr]))]
+                for group_value in itertools.product(*group_value_list):
+                    pgy_dict[latent_attr][latent_attr_value][group_value] = pyg_dict[latent_attr][latent_attr_value][group_value]*\
+                        pg_dict[latent_attr][group_value]/py_dict[latent_attr][latent_attr_value]
+        dic = {}
+        for attr in attr_list:
+            dic[str(attr)] = []
+        latent_data = np.array(latent_data)
+        for latent_attr in Y:
+            latent_data_slice = latent_data[:,latent_attr]
+            for row in range(latent_data_slice.shape[0]):
+                # for group_index in Y:
+                #基于root取值，以及计算出的条件概率，基于pandas进行数据生成
+                value = latent_data_slice[row]
+                attr_set_temp = list(G[latent_attr])
+                tuples = list(pgy_dict[latent_attr][value].keys())
+                probs = list(pgy_dict[latent_attr][value].values())
+                probs = probs/np.sum(probs)
+                tuple_idx = np.random.choice(range(len(tuples)), p = probs)
+                Attrs_data = np.array(tuples[tuple_idx])
+                for i, attr in enumerate(attr_set_temp):
+                    val = Attrs_data[i]
+                    dic[str(attr)].append(val)
+        syn_data = syn_data.assign(**dic)
+        data = syn_data.values
+        # tools.write_csv(list(data), list(range(self.attr_num)), './preprocess/' + 'syn.csv')
+        return data, attr_num
+
+
+
+    ##################################################################DLPT 
+    
+
+    def DLPP_target_value(self, G,pyg,index_list,target_value,epsilon,private=False):
+        obser_attr_list = []
+        for latent_attr in index_list:
+            obser_attr_list.append(tuple(G[latent_attr]))
+        res = 0
+        for sample in range(len(self.data)):
+            temp = 1
+            for i, sample_slice in enumerate(obser_attr_list):
+                temp *= pyg[index_list[i]][target_value[i]][tuple(list(self.data[sample,sample_slice]))]
+            res += temp
+        res /= self.data_num
+        if private:
+            sensitivity = 4/self.data_num
+            res = res + np.random.laplace(0,sensitivity/epsilon)
+        else:
+            res = res
+        return res
+    
+    def DLPP_dis(self,index_list, epsilon,private=False):
+        G = self.private_statistics['G']
+        pyg = self.private_statistics['pyg_dict']
+        prob_dict = {}
+        prob_list = []
+        value_list = [[0,1] for ele in index_list]
+        for value in itertools.product(*value_list):
+            prob_value = self.DLPP_target_value(G,pyg,index_list, value,epsilon,private=False)
+            prob_dict[value] = prob_value
+            prob_list.append(prob_value)
+        return prob_dict, prob_list
+    
+    def DLPP_intersection(self,index_list,epsilon,private=False):
+        if isinstance(index_list, int):
+            noisy_histogram = np.zeros(2)
+            py_dict = self.private_statistics['py_dict']
+            prob_dict = py_dict[index_list]
+            for i in range(2):
+                noisy_histogram[i] = prob_dict[i]*self.data_num
+        else:
+            _, prob_list = self.DLPP_dis(index_list, epsilon,private=False)
+            noisy_histogram = np.array(prob_list)*self.data_num
+            histogram_real = self.clean_intersection_ca(index_list)
+            noisy_histogram = noisy_histogram.reshape(histogram_real.shape)
+        return noisy_histogram
