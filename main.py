@@ -1,6 +1,6 @@
-import PrivMRF
-import PrivMRF.utils.tools as tools
-from PrivMRF.domain import Domain
+import Utils
+import Utils.utils.tools as tools
+from Utils.domain import Domain
 import numpy as np
 
 if __name__ == '__main__':
@@ -21,7 +21,7 @@ if __name__ == '__main__':
     # for other dp parameter delta, calculate the privacy budget 
     # with cal_privacy_budget() of ./PrivMRF/utils/tools.py 
     # and hard code the budget in privacy_budget() of ./PrivMRF/utils/tools.py 
-    model = PrivMRF.run(data, domain, attr_hierarchy=None, \
+    model = Utils.run(data, domain, attr_hierarchy=None, \
         exp_name='exp', epsilon=1.920, p_config=config)
 
     # generate synthetic data

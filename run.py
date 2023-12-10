@@ -2,17 +2,14 @@
 # Copyright 2021 Kuntai Cai
 # caikt@comp.nus.edu.sg
 import os
-import PrivMRF
-import PrivMRF.utils.tools as tools
-from PrivMRF.domain import Domain
+import Utils.utils.tools as tools
+from Utils.domain import Domain
 from client import Client
 from server import Server
 import numpy as np
 from networkx.readwrite import json_graph
 import json
 import numpy as np
-import pickle
-import time
 import sys
 import logging
 import networkx as nx
@@ -32,12 +29,11 @@ os.environ["MKL_NUM_THREADS"] = thread_num
 os.environ["VECLIB_MAXIMUM_THREADS"] = thread_num
 os.environ["NUMEXPR_NUM_THREADS"] = thread_num
 
-from PrivMRF.preprocess import read_preprocessed_data, postprocess
-from PrivMRF.my_attribute_graph import AttributeGraph
-from PrivMRF.attribute_hierarchy import get_one_level_hierarchy
-from PrivMRF.my_markov_random_field import MarkovRandomField
-from PrivMRF.preprocess import preprocess
-from tree import Latent_tree_model
+from Utils.preprocess import read_preprocessed_data, postprocess
+from Utils.GraphCom_my_attribute_graph import AttributeGraph
+from Utils.attribute_hierarchy import get_one_level_hierarchy
+from Utils.OptMRF_markov_random_field import MarkovRandomField
+from Utils.preprocess import preprocess
 
 
 
@@ -123,7 +119,7 @@ def run(data, domain, attr_hierarchy, exp_name, theta, private_method, epsilon, 
         'local_MRF_theta':              0.8,
         'weight_consis':                False,
         'combine_MRF':                  True,
-        'consistency':                  True,
+        'consistency':                  False,
 
         'party_num':                    2
     }
@@ -186,23 +182,10 @@ def run(data, domain, attr_hierarchy, exp_name, theta, private_method, epsilon, 
     config['exp_name'] = 'PrivMRF_'+ config['data'] + '_' + exp_name +'_ver_epsilon' + str(epsilon)  +'_'
     if attr_hierarchy is None:
         attr_hierarchy = get_one_level_hierarchy(domain)
-    print('PrivMRF')
 
-    
-
-    # res_list_list = []
-    # for repeat in range(2):
     seeds = np.random.randint(0, high=100000, size=config['m'])
 
     client_list=[]
-    # data1 = data[:,:7]
-    # data2 = data[:,7:]
-    if config['private_method'] == 'latent_tree':
-        if config['data'] == 'nltcs':
-            tree_model = Latent_tree_model(data, domain, [i for i in range(16)], config, 4,epsilon,private=True)
-            G, Y, pyg_dict,py_dict = tree_model.construct_model()
-            syn_data = tree_model.generate_data(data,pyg_dict,py_dict,Y,G)
-        return syn_data
 
     if config['private_method'] == 'verti_gan':
         from vertigan import Generator,Discriminator,Verti_GAN
@@ -283,86 +266,23 @@ def run(data, domain, attr_hierarchy, exp_name, theta, private_method, epsilon, 
         config['attribute_binning'] = False
         config['max_clique_size'] = 2e6
         config['global_clique_size'] = 4e6
-        if config['party_num'] == 2:
-            attr_alice = [i for i in range(8)]
-            attr_bob = [i+8 for i in range(8)]
-            tuple_alice = tuple(attr_alice)
-            tuple_bob = tuple([i+8 for i in range(8)])
-            client_list.append(Client('Alice', data[:,tuple_alice], domain, attr_alice, seeds, config, epsilon, attr_hierarchy,gpu=True))
-            client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
-        elif config['party_num'] == 4:
-            attr_alice = [i for i in range(8)]
-            attr_bob = [i+8 for i in range(8)]
-            tuple_alice = tuple(attr_alice)
-            tuple_bob = tuple([i+8 for i in range(8)])
-            client_list.append(Client('Alice', data[:,tuple_alice], domain, attr_alice, seeds, config, epsilon, attr_hierarchy,gpu=True))
-            client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
-        elif config['party_num'] == 8:
-            attr_alice = [i for i in range(8)]
-            attr_bob = [i+8 for i in range(8)]
-            tuple_alice = tuple(attr_alice)
-            tuple_bob = tuple([i+8 for i in range(8)])
-            client_list.append(Client('Alice', data[:,tuple_alice], domain, attr_alice, seeds, config, epsilon, attr_hierarchy,gpu=True))
-            client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
+        # if config['party_num'] == 2:
+        attr_alice = [i for i in range(8)]
+        attr_bob = [i+8 for i in range(8)]
+        tuple_alice = tuple(attr_alice)
+        tuple_bob = tuple([i+8 for i in range(8)])
+        client_list.append(Client('Alice', data[:,tuple_alice], domain, attr_alice, seeds, config, epsilon, attr_hierarchy,gpu=True))
+        client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
         server = Server(data, [i for i in range(16)], seeds, attr_hierarchy, domain, config, gpu=True)
     elif config['data'] == 'adult':
-        # attr_pairs = [[2,8],[2,9],[2,10],[2,11],[2,12],[2,13]]
-        # config['max_clique_size'] = 65
-        # config['global_clique_size'] = 65
-        if config['binary'] == True:
-            attr_alice = [i for i in range(97)]
-            attr_bob = [i+97 for i in range(90)]
-            tuple_alice = tuple([i for i in range(97)])
-            tuple_bob = tuple([i+97 for i in range(90)])
-            client_list.append(Client('Alice', data, domain, attr_alice , seeds, config, epsilon, attr_hierarchy,gpu=True))
-            client_list.append(Client('Bob', data, domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
-            server = Server(data, [i for i in range(187)], seeds,  attr_hierarchy, domain, config, gpu=True)
-        else:
-            if config['party_num'] == 2:
-                attr_alice = [i for i in range(8)]
-                attr_bob = [i+8 for i in range(7)]
-                tuple_alice = tuple(attr_alice)
-                tuple_bob = tuple([i+8 for i in range(7)])
-                client_list.append(Client('Alice', data[:,tuple_alice], domain,  attr_alice , seeds, config, epsilon, attr_hierarchy,gpu=True))
-                client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
-                server = Server(data, [i for i in range(15)], seeds,  attr_hierarchy, domain, config, gpu=True)
-            elif config['party_num'] == 3:
-                attr_alice = [i for i in range(5)]
-                attr_bob = [i+5 for i in range(5)]
-                attr_cat = [i+5 for i in range(10)]
-                tuple_alice = tuple(attr_alice)
-                tuple_bob = tuple([i+5 for i in range(5)])
-                tuple_cat = tuple([i+5 for i in range(10)])
-                client_list.append(Client('Alice', data[:,tuple_alice], domain,  attr_alice , seeds, config, epsilon, attr_hierarchy,gpu=True))
-                client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
-                client_list.append(Client('cat', data[:,tuple_cat], domain, attr_cat, seeds, config, epsilon, attr_hierarchy, gpu=True))
-                server = Server(data, [i for i in range(15)], seeds,  attr_hierarchy, domain, config, gpu=True)
-            elif config['party_num'] == 4:
-                attr_alice = [i for i in range(4)]
-                attr_bob = [i+4 for i in range(3)]
-                attr_cat = [i+7 for i in range(4)]
-                attr_dog = [i+11 for i in range(3)]
-                tuple_alice = tuple(attr_alice)
-                tuple_bob = tuple(attr_bob)
-                tuple_cat = tuple(attr_cat)
-                tuple_dog = tuple(attr_dog)
-                client_list.append(Client('Alice', data[:,tuple_alice], domain,  attr_alice , seeds, config, epsilon, attr_hierarchy,gpu=True))
-                client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
-                client_list.append(Client('cat', data[:,tuple_cat], domain,  attr_cat , seeds, config, epsilon, attr_hierarchy,gpu=True))
-                client_list.append(Client('dog', data[:,tuple_dog], domain, attr_dog, seeds, config, epsilon, attr_hierarchy, gpu=True))
-                server = Server(data, [i for i in range(15)], seeds,  attr_hierarchy, domain, config, gpu=True)
-            elif config['party_num'] == 5:
-                attr_alice = [i for i in range(8)]
-                attr_bob = [i+8 for i in range(7)]
-                tuple_bob = tuple([i+8 for i in range(7)])
-                client_list.append(Client('Alice', data[:,tuple_alice], domain,  attr_alice , seeds, config, epsilon, attr_hierarchy,gpu=True))
-                client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
-                server = Server(data, [i for i in range(15)], seeds,  attr_hierarchy, domain, config, gpu=True)
-
+        attr_alice = [i for i in range(8)]
+        attr_bob = [i+8 for i in range(7)]
+        tuple_alice = tuple(attr_alice)
+        tuple_bob = tuple([i+8 for i in range(7)])
+        client_list.append(Client('Alice', data[:,tuple_alice], domain,  attr_alice , seeds, config, epsilon, attr_hierarchy,gpu=True))
+        client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
+        server = Server(data, [i for i in range(15)], seeds,  attr_hierarchy, domain, config, gpu=True)
     elif config['data'] == 'fire':
-        # attr_pairs = [[2,8],[2,9],[2,10],[2,11],[2,12],[2,13]]
-        # config['max_clique_size'] = 65
-        # config['global_clique_size'] = 65
         attr_alice = [i for i in range(8)]
         attr_bob = [i+8 for i in range(7)]
         tuple_alice = tuple([i for i in range(8)])
@@ -371,8 +291,6 @@ def run(data, domain, attr_hierarchy, exp_name, theta, private_method, epsilon, 
         client_list.append(Client('Bob', data[:,tuple_bob], domain, attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
         server = Server(data, [i for i in range(15)], seeds,  attr_hierarchy, domain, config, gpu=True)
     elif config['data'] == 'acs':
-        # config['max_clique_size'] = 13
-        # config['global_clique_size'] = 13
         config['attribute_binning'] = False
         attr_alice = [i for i in range(11)]
         attr_bob = [i+11 for i in range(12)]
@@ -382,8 +300,6 @@ def run(data, domain, attr_hierarchy, exp_name, theta, private_method, epsilon, 
         client_list.append(Client('Bob', data[:,tuple_bob], domain,  attr_bob, seeds, config, epsilon, attr_hierarchy, gpu=True))
         server = Server(data, [i for i in range(23)], seeds,  attr_hierarchy, domain, config, gpu=True)
     elif config['data'] == 'br2000':
-        # config['max_clique_size'] = 65
-        # config['global_clique_size'] = 65
         attr_alice = [i for i in range(7)]
         attr_bob = [i+7 for i in range(7)]
         tuple_alice = tuple([i for i in range(7)])
@@ -396,51 +312,22 @@ def run(data, domain, attr_hierarchy, exp_name, theta, private_method, epsilon, 
         msg_list.append(client.upload_msg())
 
     server.recieve_msg(msg_list)    
-    # loss = server.test_seed()
-    # print('final_loss:',loss)
-    # input()
-    # if config['private_method'] == 'random_response':
-    #     server.rr_intersection_dic()
-
-    # res_list = []
-    # for attr_pair in attr_pairs:
-    #     TVD = server.dp_TVD(attr_pair)
-    #     res_list.append(TVD)
-    # logging.info(f'the R-score of the specified attr pairs are {res_list}')
 
     if config['private_method'] == 'fmsketch':
         private_statistics = server.fm_generate_private_statistics()
         # private_statistics = {}
     elif config['private_method'] == 'random_response':
         private_statistics = {}
-    elif config['private_method'] == 'latent_mrf':
-        private_statistics = server.lr_generate_private_statistics()
     else:
         private_statistics = {}
-        # server.rr_generate_private_statistics()
-    # if 'graph_est' == 'globally':
-    #     graph, measure_list, attr_hierarchy, attr_to_level, entropy = server.build_attribute_graph(private_statistics)
-    # if 'graph_est' == 'locally':
-    # graph, measure_list, attr_hierarchy, attr_to_level, entropy, adj = server.build_attribute_graph_local_graphs(private_statistics)
 
-    # server.construct_mrf(graph, measure_list, attr_hierarchy, attr_to_level,private_statistics)
+
     model = server.build_global_mrf(private_statistics)
-    # server.candidate_marginal_selection()
-    # initialized_marginal_set = measure_list
-    # logging.info(f'the initialized_marginal_set for epsilon {epsilon} is {initialized_marginal_set}')
-    # finalized_marginal_set = server.refine_marginal_set(initialized_marginal_set)
-    # logging.info(f'the finalized_marginal_set for epsilon {epsilon} is {finalized_marginal_set}')
-    # exp_name = 'exp'
-    # data_name = 'nltcs'
-    # data_list = server.generate_data('./out/' + 'PrivMRF_'+ data_name + '_' + exp_name + '.csv')
-    # model = server.mrf
+
     if config['last_estimation']:
         model.config['convergence_ratio'] = 1.0
         model.config['estimation_iter_num'] = 5000
         model.mirror_descent()
-        # MarkovRandomField.save_model(model, './temp/' + config['data'] + '_le_model.mrf')
-    # time_cost = time.time() - start_time
-    # print('time cost: {:.4f}s'.format(time_cost))
     if not config['print']:
         sys.stdout.close()
         sys.stdout = temp_stream
@@ -457,17 +344,10 @@ def run_syn_ver(data_name, exp_name, theta, private_method, epsilon, task='TVD')
     
     data, domain, attr_list = read_preprocessed_data(data_name, task)
     # private_method = 'latent_tree'
-    if private_method != 'latent_tree' and private_method != 'verti_gan':
+    if private_method != 'verti_gan':
         nvalues=[]
         for attr in range(len(domain)):
             nvalues.append([i for i in range(domain.dict[attr]['domain'])])
-        binary = False
-        # if binary:
-        #     encoder = OneHotEncoder(sparse=False)
-        #     data = encoder.fit_transform(data)
-        #     attr_list = list(range(data.shape[1]))
-        #     changed_domain = {attr: {"type": "discrete", "domain": 2} for attr in attr_list}
-        #     domain = Domain(changed_domain, attr_list)
         read_from_out = False
         if read_from_out:
             data, headings = tools.read_csv('./out/' + 'PrivMRF_' + data_name + '_ver_epsilon' + str(epsilon)  +'_'+ exp_name + '.csv', print_info=False)
@@ -475,13 +355,6 @@ def run_syn_ver(data_name, exp_name, theta, private_method, epsilon, task='TVD')
         else:
             model = run(data, domain, attr_list, exp_name, theta, private_method, epsilon, task, p_config)
             data_list = model.synthetic_data('./out/' + 'PrivMRF_' + data_name + '_ver_epsilon' + str(epsilon)  +'_'+ exp_name +'.csv')
-        # data_list_temp = np.array(data_list)
-        # tools.write_csv(data_list, list(range(187)), './out/' + 'syn.csv')
-        if binary:
-            # for data in data_list:
-            encoder = OneHotEncoder(sparse=False, categories=nvalues,handle_unknown = "ignore")
-            data_list = np.asarray(data_list)
-            data_list = encoder.fit_transform(data_list)
     else:
         read_from_out = False
         if read_from_out:
@@ -494,62 +367,3 @@ def run_syn_ver(data_name, exp_name, theta, private_method, epsilon, task='TVD')
     logging.info(f'###################################################-end!')
     return list(data_list)
 
-# data_list
-    # start_time = time.time()
-    # print('theta:', config['theta'])
-    # if config['init_model']:
-    #     # init_model = MyAttributeGraph(data, domain, attr_hierarchy, config, config['data'])
-    #     # graph, measure_list, attr_hierarchy, attr_to_level, entropy = init_model.construct_model()'
-    #     init_model = MyAttributeGraph(self.domain, self.noisy_data_num, self.attr_list, self.config, self.config['data'],self.fmsketches, self.eps)
-    #     graph, measure_list, attr_hierarchy, attr_to_level, entropy = init_model.construct_model()
-    #     # AttributeGraph.save_model(init_model, './temp/' + config['data'] + '_model.mdl')
-    # # return entropy
-    # # init_model = AttributeGraph.load_model('./temp/' + config['data'] + '_model.mdl')
-    # graph = init_model.graph
-    # measure_list = init_model.measure_list
-    # attr_hierarchy = init_model.attr_list
-    # attr_to_level = init_model.attr_to_level
-    # data_num = init_model.data_num
-    # model = MarkovRandomField(data, domain, graph, measure_list, \
-    #     attr_hierarchy, attr_to_level, data_num, config, gpu=gpu)
-    # model.entropy_descent()
-    # # MarkovRandomField.save_model(model, './temp/' + config['data'] + '_model.mrf')
-    # # model = MarkovRandomField.load_model('./temp/' + config['data'] + '_model.mrf')
-    # if config['last_estimation']:
-    #     model.config['convergence_ratio'] = 1.0
-    #     model.config['estimation_iter_num'] = 5000
-    #     model.mirror_descent()
-    #     # MarkovRandomField.save_model(model, './temp/' + config['data'] + '_le_model.mrf')
-    # time_cost = time.time() - start_time
-    # print('time cost: {:.4f}s'.format(time_cost))
-    # if not config['print']:
-    #     sys.stdout.close()
-    #     sys.stdout = temp_stream
-    # os.chdir(cwd)
-
-
-if __name__ == '__main__':
-    # should provide int data
-    data, _ = tools.read_csv('./preprocess/nltcs.csv')
-    data = np.array(data, dtype=int)
-
-    # domain of each attribute should be [0, 1, ..., max_value-1]
-    # attribute name should be 0, ..., column_num-1.
-    json_domain = tools.read_json_domain('./preprocess/nltcs.json')
-    domain = Domain(json_domain, list(range(data.shape[1])))
-
-    # you may set hyperparameters or specify other settings here
-    config = {
-    }
-
-    # train a PrivMRF, delta=1e-5
-    # for other dp parameter delta, calculate the privacy budget 
-    # with cal_privacy_budget() of ./PrivMRF/utils/tools.py 
-    # and hard code the budget in privacy_budget() of ./PrivMRF/utils/tools.py 
-    for epsilon in [0.1,0.2]:
-        data_list = run(data, domain, attr_hierarchy=None, exp_name='exp', epsilon=1.920, task='TVD', p_config=None)
-
-    # model = PrivMRF.run(data, domain, attr_hierarchy=None, \
-    #     exp_name='exp', epsilon=0.8, p_config=config)
-
-    # generate synthetic data

@@ -103,12 +103,6 @@ class MarkovRandomField:
 
         ## Understanding: Initialize the parameter of the potentail function
         self.potential = Potential({clique: Factor.zeros(self.domain.project(clique), xp) for clique in self.maximal_cliques})
-
-        # for clique in self.maximal_cliques:
-        #     if clique in self.mrf_msg[0][0].potential:
-        #         self.potential[clique] = self.mrf_msg[0][0].potential[clique]
-        #     elif clique in self.mrf_msg[1][0].potential:
-        #         self.potential[clique] = self.mrf_msg[1][0].potential[clique]
      
         size = sum(self.domain.project(clique).size() for clique in self.maximal_cliques)
 
@@ -121,25 +115,6 @@ class MarkovRandomField:
 
         # construct measures
         self.measure_set = set(measure_list)
-        # if len(self.measure_set) > self.config['init_measure_num']:
-        #     random.shuffle(list(self.measure_set))
-        #     self.measure_set = set(list(self.measure_set)[:self.config['init_measure_num']])
-        # else:
-        # self.measure_set = set(self.measure_set)
-        # count = 0
-        # mea_temp = []
-        # for measure in self.measure_set:
-        #     if set(list(measure)).issubset(set([0,1,2,3,4,5,6,7])) or set(list(measure)).issubset(set([8,9,10,11,12,13,14,15])): 
-        #         count += 1
-        #         mea_temp.append(measure)
-        # for measure in mea_temp:
-        #     temp_domain = self.domain.project(measure)
-        #     histogram, _ = np.histogramdd(self.data[:, measure], bins=temp_domain.edge())
-        #     size = self.domain.project(measure).size()
-        #     eps = self.eps/count/size
-        #     mean = np.zeros_like(histogram)
-        #     noise = np.random.laplace(mean,1/eps)
-        #     self.histogram_dict[measure] = histogram + noise
 
         self.config['norm_query_number'] = 400
         print('k:', self.config['norm_query_number'])
@@ -1150,234 +1125,78 @@ class MarkovRandomField:
 
 
 
-    ##########################################################################  intersection
-    # def intersection(self,index_list):
-    #     set_index = set(index_list)
-    #     if self.config['private_method'] == 'scalar_product':
-    #         marginal = tuple(index_list)
-    #         temp_domain = self.domain.project(marginal)
-    #         histogram, _ = np.histogramdd(self.data[:, marginal], bins=temp_domain.edge())
-    #         # self.ldp_intersection_ca(tuple(index_list))
-    #         return histogram
-    #     else:
-    #         set_attr_alice = set(self.mrf_msg['alice']['attr_list'])
-    #         set_attr_bob = set(self.mrf_msg['bob']['attr_list'])
-
-
-    #     return histogramdd
+    ##########################################################################  CarEst
 
     def intersection(self,index_list):
         set_index = set(index_list)
-        # if self.config['private_method'] == 'fmsketch':
-        #     histogramdd = self.fm_intersection_ca(tuple(index_list))
-        #     return histogramdd
-        # elif self.config['private_method'] == 'random_response':
-        #     histogramdd = self.ldp_intersection_ca(tuple(index_list))
-        #     return histogramdd
-        if self.config['private_method'] == 'scalar_product':
-            marginal = tuple(index_list)
-            temp_domain = self.domain.project(marginal)
-            histogram, _ = np.histogramdd(self.data[:, marginal], bins=temp_domain.edge())
-            # self.ldp_intersection_ca(tuple(index_list))
-            return histogram
-        else:
-            set_attr_alice = set(self.mrf_msg['alice']['attr_list'])
-            set_attr_bob = set(self.mrf_msg['bob']['attr_list'])
-            # ,set(self.mrf_msg[1][1])]
-            cons_dict = {}
-            lap_dict = {}
-            car_dict = {}
-            mrf_dict = {}
-            if set_index.issubset(set_attr_alice):
-                carest_histogramdd = 0
-                if self.config['private_method'] == 'fmsketch':
-                    carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
-                else:
-                    carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
-                car_dict[tuple(index_list)] = carest_histogramdd
-                cons_dict['carest'] = car_dict
-                mrf_histogramdd = self.mrf_msg['alice']['mrf'].cal_marginal_dict(self.mrf_msg['alice']['mrf'].potential, [tuple(index_list)])[0][tuple(index_list)].values
-                # mrf_histogramdd = self.reduce_dimension(tuple(set_index),mrf_histogramdd, self.binning_map['bin_2_original'],carest_histogramdd)
-                # mrf_dict[tuple(set_index)] = mrf_histogramdd
-                # cons_dict['mrf'] = mrf_dict
-                # if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
-                #     for attr in set_index:
-                #         lap_histogramdd = self.binning_map['laplace_counts'][attr]
-                #         lap_dict[tuple([attr])] = lap_histogramdd
-                #     cons_dict['laplace'] = lap_dict
-                # carest = self.enforce_consistency(cons_dict,tuple(index_list))
-                return mrf_histogramdd
-            elif set_index.issubset(set_attr_bob):
-                correct = len(self.mrf_msg['alice']['attr_list'])
-                correct_index_list_tuple=tuple([ind-correct for ind in index_list])
-                # carest_histogramdd = 0
-                # if self.config['private_method'] == 'fmsketch':
-                #     carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
-                # else:
-                #     carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
-                # car_dict[tuple(index_list)] = carest_histogramdd
-                # cons_dict['carest'] = car_dict
-                mrf_histogramdd = self.mrf_msg['bob']['mrf'].cal_marginal_dict(self.mrf_msg['bob']['mrf'].potential, \
-                    [correct_index_list_tuple])[0][correct_index_list_tuple].values
-                # mrf_histogramdd = self.reduce_dimension(tuple(set_index),mrf_histogramdd, self.binning_map['bin_2_original'],carest_histogramdd)
-                # mrf_dict[tuple(set_index)] = mrf_histogramdd
-                # cons_dict['mrf'] = mrf_dict
-                # if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
-                #     for attr in set_index:
-                #         lap_histogramdd = self.binning_map['laplace_counts'][attr]
-                #         lap_dict[tuple([attr])] = lap_histogramdd
-                #     cons_dict['laplace'] = lap_dict
-                # carest = self.enforce_consistency(cons_dict,tuple(index_list))
-                # return carest
-                return mrf_histogramdd
+        set_attr_alice = set(self.mrf_msg['alice']['attr_list'])
+        set_attr_bob = set(self.mrf_msg['bob']['attr_list'])
+        cons_dict = {}
+        lap_dict = {}
+        car_dict = {}
+        mrf_dict = {}
+        if set_index.issubset(set_attr_alice):
+            carest_histogramdd = 0
+            if self.config['private_method'] == 'fmsketch':
+                carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
             else:
-                correct = len(self.mrf_msg['alice']['attr_list'])
-                set_alice = list()
-                set_bob = list()
-                for attr in index_list:
-                    if attr in self.mrf_msg['alice']['attr_list']:
-                        set_alice.append(attr)
-                    else:
-                        set_bob.append(attr)
-
-                carest_histogramdd = 0
-                if self.config['private_method'] == 'fmsketch':
-                    carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
+                carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
+            car_dict[tuple(index_list)] = carest_histogramdd
+            cons_dict['carest'] = car_dict
+            mrf_histogramdd = self.mrf_msg['alice']['mrf'].cal_marginal_dict(self.mrf_msg['alice']['mrf'].potential, [tuple(index_list)])[0][tuple(index_list)].values
+            return mrf_histogramdd
+        elif set_index.issubset(set_attr_bob):
+            correct = len(self.mrf_msg['alice']['attr_list'])
+            correct_index_list_tuple=tuple([ind-correct for ind in index_list])
+            mrf_histogramdd = self.mrf_msg['bob']['mrf'].cal_marginal_dict(self.mrf_msg['bob']['mrf'].potential, \
+                [correct_index_list_tuple])[0][correct_index_list_tuple].values
+            return mrf_histogramdd
+        else:
+            correct = len(self.mrf_msg['alice']['attr_list'])
+            set_alice = list()
+            set_bob = list()
+            for attr in index_list:
+                if attr in self.mrf_msg['alice']['attr_list']:
+                    set_alice.append(attr)
                 else:
-                    carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
-                if self.config['attribute_binning']:
-                    carest_histogramdd = self.transform_2_high_dim(index_list, carest_histogramdd)
-                car_dict[tuple(index_list)] = carest_histogramdd
-                cons_dict['carest'] = car_dict
-                
-                ###local mrf estimate the marginal
-                alice_dict = self.mrf_msg['alice']['mrf'].cal_marginal_dict(self.mrf_msg['alice']['mrf'].potential, [tuple(set_alice)])[0]
-                histogramdd_temp_alice = alice_dict[tuple(set_alice)].values
-                # histogramdd_temp_alice = self.reduce_dimension(tuple(set_alice),histogramdd_temp_alice, self.binning_map['bin_2_original'],carest_histogramdd)
-                bob_dict = self.mrf_msg['bob']['mrf'].cal_marginal_dict(self.mrf_msg['bob']['mrf'].potential, [tuple([ind-correct for ind in set_bob])])[0]
-                histogramdd_temp_bob = bob_dict[tuple([ind-correct for ind in set_bob])].values
-                # histogramdd_temp_bob = self.reduce_dimension(tuple(set_alice),histogramdd_temp_alice, self.binning_map['bin_2_original'],carest_histogramdd)
-                
-                mrf_dict[tuple(set_alice)] =  histogramdd_temp_alice
-                mrf_dict[tuple(set_bob)] =  histogramdd_temp_bob
-                cons_dict['mrf'] = mrf_dict
-                ###laplace estimate the marginal
-                if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
-                    for attr in set_index:
-                        lap_histogramdd = self.binning_map['laplace_counts'][attr]
-                        lap_dict[tuple([attr])] = lap_histogramdd
-                    cons_dict['laplace'] = lap_dict
-                if self.config['consistency'] == True:
-                    carest_histogramdd = self.enforce_consistency(cons_dict,tuple(index_list))
-                return carest_histogramdd
+                    set_bob.append(attr)
+
+            carest_histogramdd = 0
+            if self.config['private_method'] == 'fmsketch':
+                carest_histogramdd = self.fm_intersection_ca(tuple(index_list))
+            else:
+                carest_histogramdd = self.ldp_intersection_ca(tuple(index_list))
+            if self.config['attribute_binning']:
+                carest_histogramdd = self.transform_2_high_dim(index_list, carest_histogramdd)
+            car_dict[tuple(index_list)] = carest_histogramdd
+            cons_dict['carest'] = car_dict
+            
+            ###local mrf estimate the marginal
+            alice_dict = self.mrf_msg['alice']['mrf'].cal_marginal_dict(self.mrf_msg['alice']['mrf'].potential, [tuple(set_alice)])[0]
+            histogramdd_temp_alice = alice_dict[tuple(set_alice)].values
+            # histogramdd_temp_alice = self.reduce_dimension(tuple(set_alice),histogramdd_temp_alice, self.binning_map['bin_2_original'],carest_histogramdd)
+            bob_dict = self.mrf_msg['bob']['mrf'].cal_marginal_dict(self.mrf_msg['bob']['mrf'].potential, [tuple([ind-correct for ind in set_bob])])[0]
+            histogramdd_temp_bob = bob_dict[tuple([ind-correct for ind in set_bob])].values
+            # histogramdd_temp_bob = self.reduce_dimension(tuple(set_alice),histogramdd_temp_alice, self.binning_map['bin_2_original'],carest_histogramdd)
+            
+            mrf_dict[tuple(set_alice)] =  histogramdd_temp_alice
+            mrf_dict[tuple(set_bob)] =  histogramdd_temp_bob
+            cons_dict['mrf'] = mrf_dict
+            ###laplace estimate the marginal
+            if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
+                for attr in set_index:
+                    lap_histogramdd = self.binning_map['laplace_counts'][attr]
+                    lap_dict[tuple([attr])] = lap_histogramdd
+                cons_dict['laplace'] = lap_dict
+            if self.config['consistency'] == True:
+                carest_histogramdd = self.enforce_consistency(cons_dict,tuple(index_list))
+            return carest_histogramdd
                 
 
-
-              
-            #     if self.config['combine_method'] == 'consis_loss':
-            #         consistency_loss = 1e10
-            #         optimal_marginal = list()
-            #         hist_temp_list = list()
-            #         for marginal in histogram_dict:
-            #             table = histogram_dict[marginal]
-            #             hist_temp = self.combine_marginal(index_list, set_alice, set_bob, histogramdd_temp_alice,histogramdd_temp_bob,marginal,table)
-            #             consistency_loss_temp = self.consistency_loss(index_list, hist_temp, histogram_dict)
-            #             if consistency_loss_temp < consistency_loss:
-            #                 optimal_marginal.append(marginal)
-            #                 hist_temp_list.append(hist_temp)
-            #                 consistency_loss = consistency_loss_temp
-            #         histogramdd = hist_temp_list[-1]
-            #     else:
-            #         R_score = 0
-            #         optimal_attr_pair = []
-            #         for attr1 in set_alice:
-            #             for attr2 in set_bob:
-            #                 R_score_temp = self.R_score[(attr1, attr2)]
-            #                 # dp_TVD([attr1, attr2])
-            #                 if R_score_temp >= R_score:
-            #                     optimal_attr_pair.append((attr1, attr2))
-            #                     R_score = R_score_temp
-            #         marginal = optimal_attr_pair[-1]
-            #         table = histogram_dict[marginal]
-            #         histogramdd = self.combine_marginal(index_list, set_alice, set_bob, histogramdd_temp_alice,histogramdd_temp_bob,marginal,table)
-            # domain_ = self.domain.project(index_list)
-            # bins = domain_.edge()
-            # histogram, _ = np.histogramdd(self.data[:, index_list], bins=bins)
-            # histogramdd[histogramdd<1]=0
-            # return histogramdd
         
 
     ############################################################### enforce consistency
-
-    def combine_marginal(self,index_list, set_alice, set_bob, histogramdd_temp_alice,histogramdd_temp_bob,marginal,marginal_table):
-        #merge multiple 2-way marginal to high-way marginal
-        attr_0 = marginal[0]
-        attr_1 = marginal[1]
-        ind_0 = set_alice.index(attr_0)
-        ind_1 = set_bob.index(attr_1)
-
-        #正则化
-        histogramdd_temp_alice[histogramdd_temp_alice<0] = 0
-        histogramdd_temp_bob[histogramdd_temp_bob<0] = 0
-        marginal_table[marginal_table<0] = 0
-
-        histogramdd_temp_alice = histogramdd_temp_alice*(self.noisy_data_num/np.sum(histogramdd_temp_alice))
-        histogramdd_temp_bob = histogramdd_temp_bob*(self.noisy_data_num/np.sum(histogramdd_temp_bob))
-        marginal_table = marginal_table*(self.noisy_data_num/np.sum(marginal_table))
-
-        prob_alice = histogramdd_temp_alice / self.noisy_data_num
-        prob_bob = histogramdd_temp_bob / self.noisy_data_num
-        prob_cross = marginal_table / self.noisy_data_num
-
-        hist_shape = self.domain.project(index_list).shape
-        histogram = np.zeros(hist_shape)
-        prob = np.zeros(hist_shape)
-        iter_list = [[0,1] for attr in index_list]
-        for i in itertools.product(*iter_list):
-            index_alice = tuple(i[0:len(set_alice)])
-            index_bob = tuple(i[len(set_alice):])
-            index_cross = (i[ind_0], i[ind_1+len(set_alice)])
-            norm_term_cross = prob_cross[(index_cross[0],0)]+prob_cross[(index_cross[0],1)]
-            all_dims_bob = list(range(prob_bob.ndim))
-            all_dims_bob.remove(ind_1)
-            norm_term_bob = np.sum(prob_bob,axis=tuple(all_dims_bob))[i[ind_1+len(set_alice)]]
-            prob_temp = prob_alice[index_alice] * prob_cross[index_cross]/norm_term_cross* prob_bob[index_bob]/norm_term_bob
-            # prob_temp_alice_major = prob_alice[index_alice] * prob_cross[index_cross]/norm_term_cross* prob_bob[index_bob]/norm_term_bob
-            # prob_temp_bob_major = prob_alice[index_alice] * prob_cross[index_cross]/norm_term_cross* prob_bob[index_bob]/norm_term_bob
-            prob[i] = prob_temp
-        sum_ = np.sum(prob)
-        prob = prob/sum_
-        histogram = self.noisy_data_num*prob
-        return histogram
     
-
-
-    def consistency_loss(self,index_list, hist, histogram_dict):
-        #compute the consistency loss
-        loss = 0
-        for marginal in histogram_dict:
-            all_dims_temp = list(range(hist.ndim))
-            axis_0 = list(index_list).index(marginal[0])
-            axis_1 = list(index_list).index(marginal[1])
-            all_dims_temp.remove(axis_0)
-            all_dims_temp.remove(axis_1)
-            #数组沿着特定的维度进行reduce
-            hist_temp = np.sum(hist, axis=tuple(all_dims_temp))
-            loss += np.sum(np.abs(hist_temp - histogram_dict[marginal]))  #计算L1-loss的函数
-        return loss
-    
-    def reduce_dimension(self, index_list, mrf_histogramdd, bin_2_original, histogram_shape):
-        ''' 将从mrf中得到的高维表格基于分箱的attr对应关系进行降维合并,以便进行consistency '''
-        domain_list = [[i for i in range(self.domain.dict[attr]['domain'])] for attr in index_list]
-        histogramdd = np.zeros_like(histogram_shape)
-        for index in itertools.product(*domain_list):
-            involve_list = []
-            for attr, bin_value in enumerate(index):
-                involve_list.append(list(bin_2_original[attr][bin_value][0]))
-            for ind in itertools.product(*involve_list):
-                histogramdd[index] += mrf_histogramdd[ind]
-        return histogramdd
-
     def transform_2_high_dim(self,index_list, carest_histogramdd):
         bin_2_original = self.binning_map['bin_2_original']
         bin_domain_list = [[i for i in range(self.bin_domain.dict[attr]['domain'])] for attr in index_list]
@@ -1412,13 +1231,11 @@ class MarkovRandomField:
         return histogramdd
 
 
+
     def enforce_consistency(self, cons_dict,mar):
         marginal_dict_temp = cons_dict.copy()
-        # for source in marginal_dict_temp:
-        #     for m in marginal_dict_temp[source]:
         domain_ = self.domain.project(mar)
         histogram, _ = np.histogramdd(self.data[:, mar], bins=domain_.edge())
-        # marginal_dict_temp[source][m] = marginal_dict_temp['carest'][mar]/np.sum(marginal_dict_temp[source][m])
         loss = np.sum(np.abs(histogram - marginal_dict_temp['carest'][mar]))
         for i in range(4):
             for attr in list(mar):
@@ -1437,7 +1254,7 @@ class MarkovRandomField:
                             table.append(marginalized)
                     temp_dict[source] = source_dict
                 if self.config['weight_consis']:
-                    #!!!待补充
+                    # to be optimized
                     average = np.mean(np.array(table), axis=0)
                 else:
                     average = np.mean(np.array(table), axis=0)
@@ -1446,7 +1263,6 @@ class MarkovRandomField:
                         if attr in marginal:
                             list_domain = [self.domain.dict[attr]['domain'] for attr in marginal]
                             impact_cells =self.multiplyList(list_domain)/self.domain.dict[attr]['domain']
-                            # diff是1怎么计算的
                             diff = (average - temp_dict[source][marginal][2])/impact_cells
                             temp = temp_dict[source][marginal][1].copy()
                             ind = temp_dict[source][marginal][0]
@@ -1456,19 +1272,9 @@ class MarkovRandomField:
                             temp[temp<0] = 0
                             temp = temp/np.sum(temp)
                             marginal_dict_temp[source][marginal] = temp*self.noisy_data_num
-        # temp_loss = 0
-        # for source in marginal_dict_temp:ß
-            # dic = {}
-            # for marginal in marginal_dict_temp:
-                # temp = marginal_dict_temp[source][marginal]*self.noisy_data_num
-        # domain_ = self.domain.project(mar)
-        # histogram, _ = np.histogramdd(self.data[:, mar], bins=domain_.edge())
-        temp_loss = np.sum(np.abs(marginal_dict_temp['carest'][mar]-histogram))
         return marginal_dict_temp['carest'][mar]
-    
 
-
-    #####################################################fmsketch-based counting
+    #####################################################fmsketch-based CarEst
     def set_k_p_min(self, epsilon, delta, m, gamma):
         """A helper function for computing k_p and eta."""
         if not 0 < epsilon < float('inf') or not 0 < delta < 1:
@@ -1584,7 +1390,7 @@ class MarkovRandomField:
         return TVD
     
 
-    ################################################################## rr-based counting
+    ################################################################## FO-based CarEst
     def rr_histogram_ca(self, rr_data, index_list):
         temp_domain = self.bin_domain.project(index_list)
         histogram, _= np.histogramdd(rr_data[:, index_list], bins=temp_domain.edge())
@@ -1679,97 +1485,6 @@ class MarkovRandomField:
         return unflatten(adjusted)
 
 
-
-    def generate_data(self, latent_data):
-        Y = self.private_statistics['Y']
-        G = self.private_statistics['G']
-        pg_dict = self.private_statistics['pg_dict']
-        pyg_dict = self.private_statistics['pyg_dict']
-        py_dict = self.private_statistics['py_dict']
-        attr_num = 0
-        for group in G:
-            attr_num += len(group)
-        attr_list = [str(attr) for attr in range(attr_num)]
-        syn_data = pd.DataFrame(columns = attr_list)
-        
-        pgy_dict = {}
-        for latent_attr in Y:
-            pgy_dict[latent_attr] = {}
-            for latent_attr_value in range(2):
-                pgy_dict[latent_attr][latent_attr_value] = {}
-                group_value_list = [[0,1] for i in range(len(G[latent_attr]))]
-                for group_value in itertools.product(*group_value_list):
-                    pgy_dict[latent_attr][latent_attr_value][group_value] = pyg_dict[latent_attr][latent_attr_value][group_value]*\
-                        pg_dict[latent_attr][group_value]/py_dict[latent_attr][latent_attr_value]
-        dic = {}
-        for attr in attr_list:
-            dic[str(attr)] = []
-        latent_data = np.array(latent_data)
-        for latent_attr in Y:
-            latent_data_slice = latent_data[:,latent_attr]
-            for row in range(latent_data_slice.shape[0]):
-                # for group_index in Y:
-                #基于root取值，以及计算出的条件概率，基于pandas进行数据生成
-                value = latent_data_slice[row]
-                attr_set_temp = list(G[latent_attr])
-                tuples = list(pgy_dict[latent_attr][value].keys())
-                probs = list(pgy_dict[latent_attr][value].values())
-                probs = probs/np.sum(probs)
-                tuple_idx = np.random.choice(range(len(tuples)), p = probs)
-                Attrs_data = np.array(tuples[tuple_idx])
-                for i, attr in enumerate(attr_set_temp):
-                    val = Attrs_data[i]
-                    dic[str(attr)].append(val)
-        syn_data = syn_data.assign(**dic)
-        data = syn_data.values
-        # tools.write_csv(list(data), list(range(self.attr_num)), './preprocess/' + 'syn.csv')
-        return data, attr_num
-
-
-
-    ##################################################################DLPT 
     
 
-    def DLPP_target_value(self, G,pyg,index_list,target_value,epsilon,private=False):
-        obser_attr_list = []
-        for latent_attr in index_list:
-            obser_attr_list.append(tuple(G[latent_attr]))
-        res = 0
-        for sample in range(len(self.data)):
-            temp = 1
-            for i, sample_slice in enumerate(obser_attr_list):
-                temp *= pyg[index_list[i]][target_value[i]][tuple(list(self.data[sample,sample_slice]))]
-            res += temp
-        res /= self.data_num
-        if private:
-            sensitivity = 4/self.data_num
-            res = res + np.random.laplace(0,sensitivity/epsilon)
-        else:
-            res = res
-        return res
     
-    def DLPP_dis(self,index_list, epsilon,private=False):
-        G = self.private_statistics['G']
-        pyg = self.private_statistics['pyg_dict']
-        prob_dict = {}
-        prob_list = []
-        value_list = [[0,1] for ele in index_list]
-        for value in itertools.product(*value_list):
-            prob_value = self.DLPP_target_value(G,pyg,index_list, value,epsilon,private=False)
-            prob_dict[value] = prob_value
-            prob_list.append(prob_value)
-        return prob_dict, prob_list
-    
-    def DLPP_intersection(self,index_list,epsilon,private=False):
-        if isinstance(index_list, int):
-            noisy_histogram = np.zeros(2)
-            py_dict = self.private_statistics['py_dict']
-            prob_dict = py_dict[index_list]
-            for i in range(2):
-                noisy_histogram[i] = prob_dict[i]*self.data_num
-        else:
-            _, prob_list = self.DLPP_dis(index_list, epsilon,private=False)
-            noisy_histogram = np.array(prob_list)*self.data_num
-            histogram_real = self.clean_intersection_ca(index_list)
-            noisy_histogram = noisy_histogram.reshape(histogram_real.shape)
-        return noisy_histogram

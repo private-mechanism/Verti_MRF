@@ -307,6 +307,7 @@ def privacy_budget(epsilon):
         0.180: 0.003100908361375332,
         0.200: 0.003761877305805683,
         0.220: 0.0044,
+        0.230: 0.0048,
         0.240: 0.005256538279354572,
         0.280: 0.006975927390158176,
         0.320: 0.008914261125028133,
@@ -450,26 +451,3 @@ def exponential_mechanism(item_list, score_list, epsilon, sensitivity):
     return item_list[choice], i
 
 
-def dp_qcut(A, num_bins,eps):
-    unique_values, counts = np.unique(A, return_counts=True)
-    dim = len(counts)
-    noise = np.random.laplace(0, 1/eps,dim)
-    counts = counts + noise
-    counts[counts <= 0] = 2
-    counts = [int(np.ceil(count)) for count in list(counts)]
-    data_temp = np.zeros(int(np.sum(counts)))
-    index = 0
-    for i, value in enumerate(unique_values):
-        data_temp[index:index+counts[i]] = [int(value) for i in range(counts[i])]
-        index = index+counts[i]
-    random.shuffle(data_temp)
-    data_temp_= pd.qcut(data_temp, num_bins, duplicates='drop').codes
-    dic = dict()
-    ori_2_bin = dict()
-    for i in range(num_bins):
-        subset = data_temp[data_temp_ == i]
-        target_values, target_counts = np.unique(subset, return_counts=True)
-        dic[i] =(target_values, target_counts/np.sum(target_counts))
-        for attr in list(target_values):
-            ori_2_bin[attr] = i
-    return ori_2_bin, dic, counts

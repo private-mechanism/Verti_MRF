@@ -11,18 +11,17 @@ os.environ["MKL_NUM_THREADS"] = thread_num
 os.environ["VECLIB_MAXIMUM_THREADS"] = thread_num
 os.environ["NUMEXPR_NUM_THREADS"] = thread_num
 
-os.environ["CUDA_VISIBLE_DEVICES"] = '5'
+os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
 from exp.evaluate import run_experiment, split
-from PrivMRF.preprocess import preprocess
+from Utils.preprocess import preprocess
 
 parser = argparse.ArgumentParser(description='manual to this script')
 parser.add_argument('--paradigm', type=str, default = 'ver_PrivMRF')
-parser.add_argument('--private_method', type=str, default = 'fmsketch') # random_response/fmsketch/vertigan
+parser.add_argument('--private_method', type=str, default = 'fmsketch') # random_response/fmsketch/verti_gan
 parser.add_argument('--epsilon', type=float, default=0.8)
 parser.add_argument('--task', type=str, default='tvd') #tvd/svm
 parser.add_argument('--dataset', type=str, default='adult')
-# python3 script.py adult 1
 
 if __name__ == '__main__':
     for path in ['./temp', './result', './out']:
@@ -41,10 +40,6 @@ if __name__ == '__main__':
     method = args.paradigm
     exp = args.task
     epsilon = args.epsilon
-    # method = 'ver_PrivMRF'
-    # exp = 'tvd'
-    cen_binning = False
-
     
     private_method_list= [args.private_method]
 
@@ -58,15 +53,11 @@ if __name__ == '__main__':
             now = time.strftime("%Y-%m-%d-%H_%M_%S",time.localtime(time.time()))
             if method== 'cen_PrivMRF':
                 exp_name = 'cen_PrivMRF'
-                if cen_binning == True:
-                    exp_name = 'cen_PrivMRF'+'_binning'
-            elif method == 'ver_PrivMRF':
-                exp_name = private_method+'_1130_com_'
             else:
-                exp_name = private_method+'_1128_'
+                exp_name = private_method
+
             if exp == 'svm':
                 run_experiment(data_list, method, exp_name, theta,task='SVM',private_method=private_method, epsilon_list=epsilon_list, repeat=repeat, classifier_num=5, generate=True)
-                # exp_name = ''
                 run_experiment(data_list, method, exp_name, theta,task='SVM', private_method=private_method,epsilon_list=epsilon_list, repeat=repeat, classifier_num=1, generate=False)
             else:
                 run_experiment(data_list, method, exp_name, theta,task='TVD', private_method=private_method, epsilon_list=epsilon_list, repeat=repeat, classifier_num=25)

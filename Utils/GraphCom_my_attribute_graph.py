@@ -209,35 +209,6 @@ class AttributeGraph:
                 self.measure_list.append(tuple([attr]))
                 print('single attr measure:', attr)
 
-        # if there remains space for other measures, add them
-        # measure_list = \
-        #     list(tools.deduplicate_measure_set(tuple(sorted(measure)) \
-        #         for measure in measure_list))
-        # random.shuffle(measure_list)
-        # for measure in measure_list:
-        #     if len(self.measure_list) >= self.config['init_measure_num']:
-        #         break
-        #     if not tools.contain_measure(self.measure_list, measure):
-        #         self.measure_list.append(measure)
-
-
-        # self.measure_list= []
-        # self.measure_list.extend(list(mrf_msg[0][0].measure_set))
-        # temp_list = list(mrf_msg[1][0].measure_set)
-        # for measure in temp_list:
-        #     self.measure_list.append(tuple([i+len(mrf_msg[0][1]) for i in list(measure)]))
-        # self.measure_list.extend(list(mrf_msg[1][0].measure_set))
-
-        # for attr1 in mrf_msg[0][1]:
-        #     for attr2 in mrf_msg[1][1]:
-        #         if adj[attr1][attr2] == 1:
-        #         self.measure_list.append((attr1, attr2))
-
-
-        # if self.config['enable_attribute_hierarchy']:
-        #     for measure in self.measure_list:
-        #         print('  ', measure, tools.measure_level_size(measure, self.attr_list, self.attr_to_level))
-
         # run acs on cpu, so we have to use a small graph
         # note this step actually decrease the performance
         if self.data_name == 'acs' and self.config['epsilon'] > 0.10:
@@ -250,9 +221,6 @@ class AttributeGraph:
         data = json_graph.node_link_data(self.graph)
         with open('./temp/graph_'+self.config['exp_name']+'.json', 'w') as out_file:
             json.dump(data, out_file)
-        # with open('./temp/measure_'+self.config['exp_name']+'.json', 'w') as out_file:
-        #     json.dump(self.measure_list, out_file)
-
         return self.graph, self.measure_list, self.attr_list, self.attr_to_level, entropy
 
     @staticmethod
@@ -298,23 +266,7 @@ class AttributeGraph:
         # print('data entropy: {}'.format(data_entropy))
         start_status = Status(start_G, start_adj)
         current_status = start_status
-        
-
-        # current_score, current_entropy, current_size = self.score(start_status.graph, self.entropy_map)
-        # print('  init score: {:.4f} query_num: {} size: {:.4e}, edge_num: {} entropy: {:.2f}'\
-        #     .format(current_score, len(self.entropy_map), current_size, \
-        #     current_status.graph.number_of_edges(), current_entropy))
-        # temp1 = 0
-
-        # # temp2 = 0
-
-        # for attr1 in range(self.attr_num):
-        #     for attr2 in range(self.attr_num):
-        #         if attr2>attr1:
-        #         # temp1 += tools.dp_TVD(self.TVD_map, self.data, self.bin_domain, [attr1, attr2], self.TVD_noise)[0]
-        #             temp1 += self.dp_TVD([attr1, attr2])
-        #         temp2 += tools.dp_mutual_info(self.MI_map, self.entropy_map, self.data, self.bin_domain, [attr1, attr2], self.MI_noise)[0]
-        # print('average TVD and noise:', temp1/(self.attr_num*(self.attr_num-1)/2), self.TVD_noise)
+    
 
         score_func = self.pairwise_score_TVD
         local_count = 0
@@ -681,52 +633,13 @@ class AttributeGraph:
                 temp_domain = domain.project([index_list[1]])
                 histogram= self.fm_histogram_ca(index_list[1])
                 fact3 = Factor(temp_domain, histogram, np)
-            elif self.config['private_method'] == 'scalar_product':
-                marginal = tuple(index_list)
-                temp_domain = self.bin_domain.project(marginal)
-                histogram, _ = np.histogramdd(self.data[:, marginal], bins=temp_domain.edge())
-                histogram += np.random.laplace(0, 1/self.privacy_budget_per_TVD,histogram.shape)
-                fact1 = Factor(domain, histogram, np)
-                temp_domain = domain.project([index_list[0]])
-                # histogram, _= np.histogramdd(self.data[:, (index_list[0],)], bins=temp_domain.edge())
-                histogram = self.noisy_histogram_attr[index_list[0]]
-                fact2 = Factor(temp_domain, histogram, np)
-                temp_domain = domain.project([index_list[1]])
-                histogram = self.noisy_histogram_attr[index_list[1]]
-                fact3 = Factor(temp_domain, histogram, np)
-                fact4 = fact2.expand(domain) * fact3.expand(domain) / len(self.data)
-                TVD = np.sum(np.abs(fact4.values - fact1.values)) / 2 / len(self.data)
-                if self.gpu:
-                    TVD = TVD.item()
-                return TVD
-            elif self.config['private_method'] == 'latent_mrf':
-                marginal = tuple(index_list)
-                temp_domain = self.bin_domain.project(marginal)
-                histogram = self.DLPP_intersection(index_list,1/self.privacy_budget_per_TVD)
-                # np.histogramdd(self.data[:, marginal], bins=temp_domain.edge())
-                fact1 = Factor(temp_domain, histogram, np)
-                temp_domain = domain.project([index_list[0]])
-                # histogram, _= np.histogramdd(self.data[:, (index_list[0],)], bins=temp_domain.edge())
-                histogram = self.DLPP_intersection(index_list[0],1/self.privacy_budget_per_TVD)
-                fact2 = Factor(temp_domain, histogram, np)
-                temp_domain = domain.project([index_list[1]])
-                histogram = self.DLPP_intersection(index_list[1],1/self.privacy_budget_per_TVD)
-                fact3 = Factor(temp_domain, histogram, np)
-                fact4 = fact2.expand(domain) * fact3.expand(domain) / len(self.data)
-                TVD = np.sum(np.abs(fact4.values - fact1.values)) / 2 / len(self.data)
-                if self.gpu:
-                    TVD = TVD.item()
-                return TVD
             else:
                 histogram = self.ldp_intersection_ca(index_list)
                 fact1 = Factor(domain, histogram, np)
                 temp_domain = domain.project([index_list[0]])
                 histogram= self.ldp_intersection_ca((index_list[0],))    
-                # histogram, _= 
-                # np.histogramdd(self.data[:, index_list[0]], bins=temp_domain.edge())
                 fact2 = Factor(temp_domain, histogram, np)
                 temp_domain = domain.project([index_list[1]])
-                # histogram, _= np.histogramdd(self.data[:, index_list[1]], bins=temp_domain.edge())
                 histogram= self.ldp_intersection_ca((index_list[1],))  
                 fact3 = Factor(temp_domain, histogram, np)
             fact4 = fact2.expand(domain) * fact3.expand(domain) / self.noisy_data_num
@@ -736,27 +649,6 @@ class AttributeGraph:
         return TVD
     
     
-    # def dp_TVD(self, index_list):
-    #     domain = self.bin_domain
-    #     TVD_map = {}
-    #     if not isinstance(index_list, tuple):
-    #         index_list = tuple(sorted(index_list))
-    #     if index_list not in TVD_map:
-    #         domain = domain.project(index_list)
-    #         # histogram = self.fm_intersection_ca(tuple(index_list))
-    #         histogram = self.private_statistics['intersection'][tuple(index_list)]
-    #         fact1 = Factor(domain, histogram, np)
-    #         temp_domain = domain.project([index_list[0]])
-    #         histogram= self.private_statistics['histogram'][index_list[0]]
-    #         fact2 = Factor(temp_domain, histogram, np)
-    #         temp_domain = domain.project([index_list[1]])
-    #         histogram= self.private_statistics['histogram'][index_list[1]]
-    #         fact3 = Factor(temp_domain, histogram, np)
-    #         fact4 = fact2.expand(domain) * fact3.expand(domain) / self.noisy_data_num
-    #         TVD = np.sum(np.abs(fact4.values - fact1.values)) / 2 / self.noisy_data_num
-    #         if self.gpu:
-    #             TVD = TVD.item()
-    #     return TVD
     
 
     def attr_graph_combine(self, mrf_msg):
@@ -779,38 +671,11 @@ class AttributeGraph:
 
         start_status = Status(initial_graph, initial_adj)
         current_status = start_status
-        current_score, current_entropy, current_size = self.score(start_status.graph, self.entropy_map)
-
-        # a[0:2,:]=f
-        # then build the glocal graph by adding edges within attrs with high R-scores
-        # start_G = nx.Graph()
-        # start_G.add_nodes_from(list(range(self.attr_num)))
-        # start_adj = np.zeros(shape=(self.attr_num, self.attr_num), dtype=float)
-        # data_entropy = tools.dp_entropy({}, self.data, self.bin_domain, list(range(self.attr_num)), 0)[0]
-        # print('data entropy: {}'.format(data_entropy))
-        # start_status = Status(initial_graph, initial_adj)
-        # current_status = start_status
-        # current_score, current_entropy, current_size = self.score(start_status.graph, self.entropy_map)
-        # print('  init score: {:.4f} query_num: {} size: {:.4e}, edge_num: {} entropy: {:.2f}'\
-        #     .format(current_score, len(self.entropy_map), current_size, \
-        #     current_status.graph.number_of_edges(), current_entropy))
-        # temp1 = 0
-        # # temp2 = 0
-        # for attr1 in range(self.attr_num):
-        #     for attr2 in range(attr1+1, self.attr_num):
-        #         # temp1 += tools.dp_TVD(self.TVD_map, self.data, self.bin_domain, [attr1, attr2], self.TVD_noise)[0]
-        #         temp1 += self.dp_TVD([attr1, attr2])
-        #         temp2 += tools.dp_mutual_info(self.MI_map, self.entropy_map, self.data, self.bin_domain, [attr1, attr2], self.MI_noise)[0]
-        # print('average TVD and noise:', temp1/(self.attr_num*(self.attr_num-1)/2), self.TVD_noise)
         entropy = -1
-        score_func = self.pairwise_score_TVD
         max_count = len(attr_list_1)*len(attr_list_2)
         self.config['search_iter_num'] = max_count 
-        search_iter_num = self.config['search_iter_num']
-        # check_entropy_map = {}
 
         max_count = len(attr_list_1)*len(attr_list_2)
-        # # control_count = 0
         tvd_dic = {}
         for attr1 in attr_list_1:
             for attr2 in attr_list_2:
@@ -818,7 +683,6 @@ class AttributeGraph:
 
         max_index = int(np.ceil(max_count/5))
         tvd_dic = sorted(tvd_dic.items(), key=lambda item:item[1], reverse=True)
-        # edge_tvd_list = tvd_dic[0:max_index]
         edge_list = []
         for edge, TVD in tvd_dic:
             edge_list.append(edge)
@@ -833,43 +697,6 @@ class AttributeGraph:
                 status = copy.deepcopy(current_status)
             if count == max_index:
                 break
-
-        # for edge, TVD in tvd_dic:
-        #     edge_list.append(edge)
-        
-        # for attr1, attr2 in edge_list:
-        #     current_status = current_status.get_neighbor_status(attr1, attr2, 1)
-
-
-        # local_count = 0
-        # for i in range(search_iter_num):
-        #     # generate edge list
-        #     best_score = self.min_score
-        #     best_status = None
-        #     edge_list = []
-        #     # # for attr1 in range(self.attr_num):
-        #     for attr1 in attr_list_1:
-        #         for attr2 in attr_list_2:
-        #             if current_status.adj[attr1][attr2] == 0:
-        #                 edge_list.append((attr1, attr2))
-        #     random.shuffle(edge_list)
-        # #     # control_count = 0
-        #     for attr1, attr2 in edge_list:
-        #         status = current_status.get_neighbor_status(attr1, attr2, 1)
-        #         status_score, mutual_info, size = score_func(status.graph)
-        #         # print('status score:', status_score)
-        #         if status_score > best_score:
-        #             best_score = status_score
-        #             best_status = status
-        #     if best_status == None:
-        #         print('  found local minimum')
-        #         local_count += 1
-        #         if local_count >= 3:
-        #             break
-        #         continue
-        #     # local_count = 0
-        #     current_status = best_status
-
         graph = current_status.graph
         if not nx.is_chordal(graph):
             graph = tools.triangulate(graph)
@@ -878,7 +705,7 @@ class AttributeGraph:
     
 
 
-    #####################################################fmsketch-based counting
+    #####################################################fmsketch-based CarEst
     def set_k_p_min(self, epsilon, delta, m, gamma):
         """A helper function for computing k_p and eta."""
         if not 0 < epsilon < float('inf') or not 0 < delta < 1:
@@ -963,7 +790,7 @@ class AttributeGraph:
         return estimate
 
 
-    ################################################################## rr-based counting
+    ################################################################## FO-based CarEst
     def rr_histogram_ca(self, rr_data, index_list):
         da = rr_data
         tu = index_list

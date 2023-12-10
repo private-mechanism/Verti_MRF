@@ -15,9 +15,9 @@ os.environ["VECLIB_MAXIMUM_THREADS"] = thread_num
 os.environ["NUMEXPR_NUM_THREADS"] = thread_num
 
 from .preprocess import read_preprocessed_data, postprocess
-from .attribute_graph import AttributeGraph
+from .cen_attribute_graph import AttributeGraph
 from .attribute_hierarchy import get_one_level_hierarchy
-from .markov_random_field import MarkovRandomField
+from .LocMRF_markov_random_field import MarkovRandomField
 from networkx.readwrite import json_graph
 import json
 import numpy as np

@@ -1,18 +1,18 @@
 import csv
-import PrivMRF.utils as utils
+import Utils.utils as utils
 import numpy as np
-from PrivMRF.domain import Domain
+from Utils.domain import Domain
 import random
 from sklearn import svm
 from sklearn.metrics import accuracy_score
 import json
 import pandas as pd
 from run import run_syn_ver
-from PrivMRF.main import run_syn_cen
+from Utils.main import run_syn_cen
 import time
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from PrivMRF.preprocess import read_preprocessed_data
+from Utils.preprocess import read_preprocessed_data
 from sklearn import preprocessing
 from sklearn.preprocessing import OneHotEncoder
 import os

@@ -121,6 +121,7 @@ class Verti_GAN(object):
         self.noise_function = noise_function
         self.party2attr = party2attr
         self.epsilon2sigma = {0.4:2.1,0.8:1.2,1.6:0.88,3.2:0.7,None:0}
+        #For NLTCS dataset
         # (0.4, sigma=2.1, batch_size/len(data)=100/23574, clipping_bound = 1, iter=10, party=2)
         # (0.8, sigma=1.2, batch_size/len(data)=100/23574, clipping_bound = 1, iter=10, party=2)
         # (1.6, sigma=0.88, batch_size/len(data)=100/23574, clipping_bound = 1, iter=10, party=2)
@@ -248,10 +249,6 @@ class Verti_GAN(object):
             generator_solver.step()
             # Reset gradient
             generator_solver.zero_grad()
-            name = 'adultvertigan'
-            with open('result/inner_res/'+name+'.pkl', 'wb+') as f:  # Python 3: open(..., 'wb')
-                pickle.dump(pic, f)
-
 
     def generate_single(self, noise, i):
         """Generate a synthetic data set using the trained model
