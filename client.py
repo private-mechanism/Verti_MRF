@@ -305,7 +305,6 @@ class Client:
         if self.config['private_method'] == 'fmsketch':
             logging.info(f'{self.ID} is generating FMsketches under differential privacy!')
             self.generate_multiple_sketches()
-            #上传用于server生成需要被减掉的K_p
             msg['budget_used'] = self.eps
         elif self.config['private_method'] == 'random_response':
             logging.info(f'{self.ID} is generating Random responses under differential privacy!')
