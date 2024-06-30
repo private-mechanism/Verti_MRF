@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 import random
 import scipy.integrate as integrate
 from scipy.optimize import fsolve
-from ..factor import Factor
+from .factor import Factor
 import mpmath as mp
 import cupy as cp
 import pandas as pd
 import json
-from ..domain import Smoother
+from .domain import Smoother
 from bisect import bisect_left
 
 mp.mp.dps = 1000

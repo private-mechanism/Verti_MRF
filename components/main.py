@@ -14,9 +14,9 @@ os.environ["MKL_NUM_THREADS"] = thread_num
 os.environ["VECLIB_MAXIMUM_THREADS"] = thread_num
 os.environ["NUMEXPR_NUM_THREADS"] = thread_num
 
-from .preprocess import read_preprocessed_data, postprocess
-from .cen_attribute_graph import AttributeGraph
-from .attribute_hierarchy import get_one_level_hierarchy
+from .utils.preprocess import read_preprocessed_data, postprocess
+from .Cen_attribute_graph import AttributeGraph
+from .utils.attribute_hierarchy import get_one_level_hierarchy
 from .LocMRF_markov_random_field import MarkovRandomField
 from networkx.readwrite import json_graph
 import json
@@ -24,7 +24,7 @@ import numpy as np
 import pickle
 import time
 import sys
-from .preprocess import preprocess
+from .utils.preprocess import preprocess
 import copy
 
 def run(data, domain, attr_hierarchy, exp_name, epsilon, task='TVD', p_config=None):

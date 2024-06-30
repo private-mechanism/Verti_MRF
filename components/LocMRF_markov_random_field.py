@@ -1,4 +1,4 @@
-from .factor import Factor, Potential
+from .utils.factor import Factor, Potential
 import numpy as np
 import cupy as cp
 import networkx as nx
@@ -9,8 +9,8 @@ import time
 import pickle
 import random
 import pandas as pd
-from .domain import Domain
-from .attribute_hierarchy import Attribute
+from .utils.domain import Domain
+from .utils.attribute_hierarchy import Attribute
 import os
 import json
 

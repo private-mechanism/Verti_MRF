@@ -16,11 +16,11 @@ import copy
 import pickle
 
 # from Utils.preprocess import preprocess
-from Utils.factor import Factor
-from Utils.OptMRF_markov_random_field import MarkovRandomField
+from components.utils.factor import Factor
+from components.OptMRF_markov_random_field import MarkovRandomField
 # from Utils.fmsketch import intersection_ca
-from Utils.domain import Domain
-from Utils.GraphCom_my_attribute_graph import AttributeGraph
+from components.utils.domain import Domain
+from components.GraphCom_my_attribute_graph import AttributeGraph
 # from Utils.utils.volh import volh_perturb, volh_membership, rr_membership, rr_perturb
 # from Utils.preprocess import read_preprocessed_data, postprocess
 # from Utils.attribute_hierarchy import get_one_level_hierarchy
@@ -360,7 +360,6 @@ class Server:
 
     def fm_generate_private_statistics(self):
         self.intersection_dic = {}
-        # if self.config['binary'] == False:
         self.generate_intersection_sta()
         self.generate_histogram_sta()
         return {'intersection':self.intersection_dic,'histogram':self.histogram_dic}
@@ -410,13 +409,4 @@ class Server:
         self.mrf = self.init_mrf(graph, measure_list, attr_hierarchy, attr_to_level,private_statistics)
         self.mrf.entropy_descent()
         return self.mrf
-
-
-    
-
-
-
-
-
-
 

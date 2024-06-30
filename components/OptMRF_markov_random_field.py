@@ -1,4 +1,4 @@
-from .factor import Factor, Potential
+from .utils.factor import Factor, Potential
 import numpy as np
 import cupy as cp
 import networkx as nx
@@ -9,8 +9,8 @@ import time
 import pickle
 import random
 import pandas as pd
-from .domain import Domain
-from .attribute_hierarchy import Attribute
+from .utils.domain import Domain
+from .utils.attribute_hierarchy import Attribute
 import os
 import json
 import logging
@@ -1016,8 +1016,6 @@ class MarkovRandomField:
                     temp = self.df.loc[:, attr].copy()      
                     self.df.loc[:, attr] = self.uniform_sampling(self.binning_map, temp, attr, self.config['uniform_sampling'])
             data_list = list(self.df.to_numpy())
-        if self.config['private_method'] == 'latent_mrf':
-            data_list, self.attr_num = self.generate_data(data_list)
         tools.write_csv(data_list, list(range(self.attr_num)), path)
         return data_list
     
@@ -1040,21 +1038,15 @@ class MarkovRandomField:
                 self.set_zero_for_hierarchy(marginal_value, attr_list, attrs)
             def foo(group):
                 idx = group.name
-                # idx = int(idx)
+
                 vals = tools.generate_column_data(marginal_value[idx], group.shape[0])
-                # target = str(target)
                 group[target] = vals
                 return group
             self.df = self.df.groupby(list(cond),as_index=False).apply(foo)
 
-        # if self.config['attribute_binning']:
-        #     temp = self.df.loc[:, target].copy()      
-        #     self.df.loc[:, target] = self.uniform_sampling(self.binning_map, temp, target)
 
     
     def uniform_sampling(self, binning_map, data, target, uniform=False):
-        # cut = binning_map[target]['cut']
-        # max = binning_map[target]['domain_change'][0]
         binning_num = self.config['binning_num']
         if binning_map['domain_change'][target][0] <= binning_num:
             return data
@@ -1072,7 +1064,6 @@ class MarkovRandomField:
                     else:
                         prob = binning_map['bin_2_original'][target][i][1]
                     data[index_i] = np.random.choice(values, p = prob.ravel(),size=len(index_i))
-                # data[index_1] = np.random.randint(cut, max+1, size=len(index_1))
             return data
 
 
@@ -1084,12 +1075,7 @@ class MarkovRandomField:
             else:
                 temp_domain = self.domain.project(marginal)
                 histogram, _ = np.histogramdd(data[:, marginal], bins=temp_domain.edge())
-                if self.config['private_method'] == 'scalar_product':
-                    noisy_histogram = histogram + np.random.laplace(0, 1/privacy_budget, histogram.shape)
-                elif self.config['private_method'] == 'latent_mrf':
-                    noisy_histogram = self.DLPP_intersection(marginal,privacy_budget)
-                else:
-                    noisy_histogram = self.intersection(marginal)
+                noisy_histogram = self.intersection(marginal)
                 noisy_histogram[noisy_histogram<0] = 0
                 if return_factor:
                     fact = Factor(temp_domain,noisy_histogram)
@@ -1104,12 +1090,7 @@ class MarkovRandomField:
     def dp_1norm(self, data, domain, index_list, marginal, budget, to_cpu=False):
         bins = domain.project(index_list).edge()
         histogram, _ = np.histogramdd(data[:, index_list], bins=bins)
-        if self.config['private_method'] == 'scalar_product':
-            noisy_histogram = histogram + np.random.laplace(0, 1/budget, histogram.shape)
-        elif self.config['private_method'] == 'latent_mrf':
-            noisy_histogram = self.DLPP_intersection(index_list,budget)
-        else:
-            noisy_histogram = self.intersection(index_list)
+        noisy_histogram = self.intersection(index_list)
         to_cpu = False
         if self.gpu and not to_cpu:
             value = cp.asnumpy(marginal.values)
@@ -1132,7 +1113,6 @@ class MarkovRandomField:
         set_attr_alice = set(self.mrf_msg['alice']['attr_list'])
         set_attr_bob = set(self.mrf_msg['bob']['attr_list'])
         cons_dict = {}
-        lap_dict = {}
         car_dict = {}
         mrf_dict = {}
         if set_index.issubset(set_attr_alice):
@@ -1182,12 +1162,6 @@ class MarkovRandomField:
             mrf_dict[tuple(set_alice)] =  histogramdd_temp_alice
             mrf_dict[tuple(set_bob)] =  histogramdd_temp_bob
             cons_dict['mrf'] = mrf_dict
-            ###laplace estimate the marginal
-            if self.config['attribute_binning'] and self.config['binning_method']=='freq' and self.config['use_binning2consis']:
-                for attr in set_index:
-                    lap_histogramdd = self.binning_map['laplace_counts'][attr]
-                    lap_dict[tuple([attr])] = lap_histogramdd
-                cons_dict['laplace'] = lap_dict
             if self.config['consistency'] == True:
                 carest_histogramdd = self.enforce_consistency(cons_dict,tuple(index_list))
             return carest_histogramdd
@@ -1236,7 +1210,6 @@ class MarkovRandomField:
         marginal_dict_temp = cons_dict.copy()
         domain_ = self.domain.project(mar)
         histogram, _ = np.histogramdd(self.data[:, mar], bins=domain_.edge())
-        loss = np.sum(np.abs(histogram - marginal_dict_temp['carest'][mar]))
         for i in range(4):
             for attr in list(mar):
                 temp_dict = {}
@@ -1253,11 +1226,7 @@ class MarkovRandomField:
                             source_dict[marginal] = (ind, marginal_table, marginalized)
                             table.append(marginalized)
                     temp_dict[source] = source_dict
-                if self.config['weight_consis']:
-                    # to be optimized
-                    average = np.mean(np.array(table), axis=0)
-                else:
-                    average = np.mean(np.array(table), axis=0)
+                average = np.mean(np.array(table), axis=0)
                 for source in marginal_dict_temp:
                     for marginal in marginal_dict_temp[source]:
                         if attr in marginal:
@@ -1268,7 +1237,6 @@ class MarkovRandomField:
                             ind = temp_dict[source][marginal][0]
                             for i in range(self.domain.dict[attr]['domain']):
                                 temp[(slice(None),)*ind+(i,)] += diff[i]
-                                # temp[(slice(None),)*ind+(1,)] += diff[1]
                             temp[temp<0] = 0
                             temp = temp/np.sum(temp)
                             marginal_dict_temp[source][marginal] = temp*self.noisy_data_num
@@ -1308,16 +1276,11 @@ class MarkovRandomField:
         for idx in range(m):
             all_sketches[idx] =  self.one_round_intersection_alpha(index_list, idx)
         debias = 0.7213 / (1 + 1.079 / m)
-     
-        # epsilon, delta = priv_config['eps'], priv_config['delta']
         domain_size = domain.dict[index_list[0]]['domain']
         c = len(index_list)*(domain_size-1)
-        # len(splits) * (len(splits[0]) - 1)
         k_p, _ = self.set_k_p_min(self.eps, 1/self.noisy_data_num, m, gamma)
         # the offset (k_p) may need to be revised, because here we are doing the complementary
         raw_comlementary_union = m / np.sum(np.power(1 + gamma, -all_sketches), axis=0) * debias - k_p * c
-        # print(k_p, len(splits))
-        # print(raw_comlementary_union)
         estimate = self.noisy_data_num - raw_comlementary_union
         estimate[estimate<0] = 10
         estimate = estimate * self.noisy_data_num/np.sum(estimate)
@@ -1423,20 +1386,15 @@ class MarkovRandomField:
     
 
     def ldp_intersection_ca(self, index_list):
-        # index_list = self.attr_list
-        # print(self.data[0,:])
         intersection = self.rr_histogram_ca(self.bin_data, index_list)
         from functools import partial
         def flatten(x):
             original_shape = x.shape
             return x.flatten(), partial(np.reshape, newshape=original_shape)
         adjusted, unflatten = flatten(intersection)
-        # adjusted = np.array(intersection_counts)
         all_combines = [list(range(self.bin_domain.dict[attr]['domain'])) for attr in index_list]
         all_combines = list(itertools.product(*all_combines))
-        #todo: adapting to the cases where domain sizes of attrs are different
         domain_list = [self.bin_domain.dict[index_list[i]]['domain'] for i in range(len(index_list))]
-        # intersection_num = np.power(domain_size, len(index_list))
         intersection_num = self.multiplyList(domain_list)
         eps = self.eps
         p_list = []
@@ -1453,8 +1411,6 @@ class MarkovRandomField:
             q_list.append(q)
 
         # generate forward probability matrix
-        
-        # max_idx = self.multiplyList(domain_list)
         forward_probs = np.ones(shape=(intersection_num, intersection_num))
         for combine in all_combines:
             idx1 = self.cartesian_to_index(combine, domain_list)
@@ -1463,25 +1419,15 @@ class MarkovRandomField:
                 for i in range(len(combine)):
                     if inner_combine[i] == combine[i]:
                         forward_probs[idx1, idx2] *= p_list[i]
-                        # forward_probs[idx2, idx1] *= p_list[i]
                     else:
                         forward_probs[idx1, idx2] *= q_list[i]
-                        # forward_probs[idx2, idx1] *= q_list[i]
                 forward_probs[idx2, idx1] = forward_probs[idx1, idx2]
-                # diff = np.count_nonzero(np.array(combine) != np.array(inner_combine))
-                # forward_probs[idx1, idx2] = np.power(q, diff) * np.power(p, len(index_list) - diff)
-                # forward_probs[idx2, idx1] = np.power(q, diff) * np.power(p, len(index_list)- diff)
         # compute unbiased frequencies
         inv_prob = np.linalg.inv(forward_probs)
-        # todo: debug
-        # print(f"******* sizes: {inv_prob.shape}, {adjusted.shape}")
-        # histogram = self.clean_intersection_ca(index_list)
         adjusted = np.matmul(inv_prob, adjusted)
-        # logging.info(f"sum of adjust {np.sum(adjusted)}")
         adjusted[adjusted < 0] = 0
         adjusted = adjusted/np.sum(adjusted)*len(self.data)
 
-        # self.private_statistics = unflatten(adjusted)
         return unflatten(adjusted)
 
 

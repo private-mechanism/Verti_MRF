@@ -14,14 +14,14 @@ os.environ["NUMEXPR_NUM_THREADS"] = thread_num
 os.environ["CUDA_VISIBLE_DEVICES"] = '3'
 
 from exp.evaluate import run_experiment, split
-from Utils.preprocess import preprocess
+from components.utils.preprocess import preprocess
 
 parser = argparse.ArgumentParser(description='manual to this script')
 parser.add_argument('--paradigm', type=str, default = 'ver_PrivMRF')
-parser.add_argument('--private_method', type=str, default = 'fmsketch') # random_response/fmsketch/verti_gan
+parser.add_argument('--private_method', type=str, default = 'fmsketch') # random_response/fmsketch
 parser.add_argument('--epsilon', type=float, default=0.8)
 parser.add_argument('--task', type=str, default='tvd') #tvd/svm
-parser.add_argument('--dataset', type=str, default='adult')
+parser.add_argument('--dataset', type=str, default='nltcs')
 
 if __name__ == '__main__':
     for path in ['./temp', './result', './out']:
@@ -31,35 +31,21 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     preprocess('nltcs')
-    preprocess('adult')
-    preprocess('br2000')
-    preprocess('fire')
 
-
-    data_list = [args.dataset]
+    data = args.dataset
     method = args.paradigm
     exp = args.task
     epsilon = args.epsilon
-    
-    private_method_list= [args.private_method]
+    private_method= args.private_method
 
-    theta_list = [0.4]
 
-    epsilon_list = [epsilon]
+    repeat = 5
+    exp_name = private_method
 
-    for theta in theta_list:
-        for private_method in private_method_list:
-            repeat = 2
-            now = time.strftime("%Y-%m-%d-%H_%M_%S",time.localtime(time.time()))
-            if method== 'cen_PrivMRF':
-                exp_name = 'cen_PrivMRF'
-            else:
-                exp_name = private_method
-
-            if exp == 'svm':
-                run_experiment(data_list, method, exp_name, theta,task='SVM',private_method=private_method, epsilon_list=epsilon_list, repeat=repeat, classifier_num=5, generate=True)
-                run_experiment(data_list, method, exp_name, theta,task='SVM', private_method=private_method,epsilon_list=epsilon_list, repeat=repeat, classifier_num=1, generate=False)
-            else:
-                run_experiment(data_list, method, exp_name, theta,task='TVD', private_method=private_method, epsilon_list=epsilon_list, repeat=repeat, classifier_num=25)
+    if exp == 'svm':
+        run_experiment(data, method, exp_name, task='SVM',private_method=private_method, epsilon=epsilon, repeat=repeat, classifier_num=5, generate=True)
+        run_experiment(data, method, exp_name, task='SVM', private_method=private_method,epsilon=epsilon, repeat=repeat, classifier_num=1, generate=False)
+    else:
+        run_experiment(data, method, exp_name, task='TVD', private_method=private_method, epsilon=epsilon, repeat=repeat, classifier_num=25)
 
 

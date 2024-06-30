@@ -1,6 +1,6 @@
 import numpy as np
 import json
-from . import utils
+from .. import utils
 import re
 
 class Attribute:

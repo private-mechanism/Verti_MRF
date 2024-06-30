@@ -1,11 +1,9 @@
-import Utils
-import Utils.utils.tools as tools
-from Utils.domain import Domain
-from Utils.fmsketch import complement_fm_sketch
-from Utils.utils import corex
-from Utils.utils.volh import volh_perturb, volh_membership, rr_membership, rr_perturb
-from Utils.LocMRF_attribute_graph import AttributeGraph
-from Utils.LocMRF_markov_random_field import MarkovRandomField
+import components.utils.tools as tools
+from components.utils.domain import Domain
+from components.utils.fmsketch import complement_fm_sketch
+from components.utils.volh import rr_perturb
+from components.LocMRF_attribute_graph import AttributeGraph
+from components.LocMRF_markov_random_field import MarkovRandomField
 
 import numpy as np 
 import pandas as pd
@@ -13,12 +11,8 @@ import concurrent.futures
 import logging
 import time
 import itertools
-import random
-import code
-from scipy import stats
 import copy
-import json
-import pickle
+
 
 class Client:
     def __init__(self, ID, data, domain, attr_list, seeds,\
@@ -27,12 +21,10 @@ class Client:
         self.data = data
         self.domain = domain
         self.attr_list = attr_list
-        # self.attr_to_level = attr_to_level
         self.config = config
         self.data_num = len(self.data)
         if self.config['structure_entropy']:
             self.noisy_data_num = self.data_num
-        # self.max_measure_attr_num = config['max_measure_attr_num']
         self.attr_num = len(self.attr_list)
         self.gpu = gpu
         self.private_statistics = {}
@@ -46,12 +38,10 @@ class Client:
         self.cut_map = {}
         self.attr_hierarchy = attr_hierarchy
         self.bin_2_original = {}
-        # for index, attr in enumerate(self.attr_list):
-        #     self.attr_hierarchy.append(attr_hierarchy[attr])
+
 
 
         #########################################allocate the privacy budget #######################################
-
         self.proportion_for_local_MRF = 0
         self.proportion_for_binning = 0
         self.proportion_for_data_num = 0
@@ -82,7 +72,7 @@ class Client:
             self.eps = 2*self.eps*(1-self.proportion_for_local_MRF-self.proportion_for_binning)/len(self.domain)
     
         if self.config['private_method'] == 'fmsketch':
-            logging.info(f'budget for binning is {self.budget_for_binning*len(domain)}, budget for local MRF is {self.budget_for_local_MRF*2}, \
+            logging.info(f'budget for binning is {self.budget_for_binning*len(domain)}, all budget for local MRFs is {self.budget_for_local_MRF*2}, \
                 budget for noisy data num{self.budget_for_data_num},for generating sketches is {self.eps*np.sqrt(len(self.domain))}')
         else:
             logging.info(f'budget for binning is {self.budget_for_binning}, budget for local MRF is {self.budget_for_local_MRF*np.sqrt(2)}, \
@@ -135,9 +125,6 @@ class Client:
             memberships = self.clean_membership(attr)
             fm_sketch_for_attr, com_fm_sketch_for_attr = complement_fm_sketch(memberships, seed, gamma, priv_config)
             temp_fmsketch[attr] = {'private_statistics':com_fm_sketch_for_attr}
-            if self.config['same_seed'] == False:
-                # seed += int(attr)
-                seed = np.random.randint(0, high=100000)
         return temp_fmsketch
 
 
@@ -216,10 +203,7 @@ class Client:
                     temp = data_temp[:,attr - self.attr_list[0]]
                     for value in ori_2_bin:
                         temp[temp == value] =  ori_2_bin[value]
-                    # data_temp[:,attr] = tools.bin_map(ori_2_bin,self.data[:,attr])
-                    # data_temp[:,attr] = pd.qcut(list(data_temp[:,attr]), bin_num, duplicates='drop').codes
                 self.bin_2_original[attr] = dic
-            #     self.data[:,attr] = pd.cut(list(self.data[:,attr]), bin_num).codes
                 domain_temp.dict[attr]['domain'] = bin_num
             else:
                 dic = dict()
@@ -232,11 +216,8 @@ class Client:
                 self.bin_2_original[attr] = dic
                 _, counts = np.unique(data_temp[:,attr - self.attr_list[0]], return_counts=True)
                 dim = len(counts)
-                if self.budget_for_binning == 0:
-                    counts = counts
-                else:
-                    noise = np.random.laplace(0, 1/self.budget_for_binning, dim)
-                    counts = counts + noise
+                noise = np.random.laplace(0, 1/self.budget_for_binning, dim)
+                counts = counts + noise
                 counts[counts <= 0] = 2
                 counts = [int(np.ceil(count)) for count in list(counts)]
                 laplace_counts[attr] = counts
@@ -254,7 +235,6 @@ class Client:
         local_config['global_clique_size'] =2e5
         local_config['max_parameter_size'] = 3e5
         local_config['init_measure'] = 0
-        # if self.ID = 'Bob':
         attr_hierarchy = []
         for ind in self.attr_list:
             attr_hierarchy.append(self.attr_hierarchy[ind])

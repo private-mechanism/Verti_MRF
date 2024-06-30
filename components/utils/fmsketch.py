@@ -280,5 +280,3 @@ if __name__ == '__main__':
     print("=== max:", np.max(ests, axis=0), "min:", np.min(ests, axis=0))
     print("=== avg:", np.average(ests, axis=0))
    
-
-

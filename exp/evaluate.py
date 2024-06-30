@@ -1,18 +1,18 @@
 import csv
-import Utils.utils as utils
+import components.utils as utils
 import numpy as np
-from Utils.domain import Domain
+from components.utils.domain import Domain
 import random
 from sklearn import svm
 from sklearn.metrics import accuracy_score
 import json
 import pandas as pd
 from run import run_syn_ver
-from Utils.main import run_syn_cen
+from components.main import run_syn_cen
 import time
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
-from Utils.preprocess import read_preprocessed_data
+from components.utils.preprocess import read_preprocessed_data
 from sklearn import preprocessing
 from sklearn.preprocessing import OneHotEncoder
 import os
@@ -39,16 +39,9 @@ def k_way_marginal(data_name, dp_data_list, k, marginal_num):
     # data, headings = utils.tools.read_csv('./exp_data/' + data_name + '_train.csv')
     data, headings = utils.tools.read_csv('./preprocess/' + data_name + '.csv', print_info=False)
     data = np.array(data, dtype=int)
-    # if data_name != 'nltcs':
-    #     encoder = OneHotEncoder(sparse=False)
-    #     data = encoder.fit_transform(data)
-    #     attr_list = list(range(data.shape[1]))
-    #     changed_domain = {attr: {"type": "discrete", "domain": 2} for attr in attr_list}
-    #     domain = Domain(changed_domain, attr_list)
 
     attr_num = data.shape[1]
     data_num = data.shape[0]
-    # attr_num = 10
     domain = json.load(open('./preprocess/'+data_name+'.json'))
     domain = {int(key): domain[key] for key in domain}
     domain = Domain(domain, list(range(attr_num)))
@@ -109,80 +102,6 @@ def k_way_marginal(data_name, dp_data_list, k, marginal_num):
         tvd_list.append(tvd)
     return tvd_list
 
-# evaluate dp data on k way marginal task
-def range_query(data_name, dp_data_list, k, query_num):
-    # data, headings = utils.tools.read_csv('./exp_data/' + data_name + '_train.csv')
-    data, headings = utils.tools.read_csv('./preprocess/' + data_name + '.csv', print_info=False)
-    data = np.array(data, dtype=int)
-    # if data_name != 'nltcs':
-    #     encoder = OneHotEncoder(sparse=False)
-    #     data = encoder.fit_transform(data)
-    #     attr_list = list(range(data.shape[1]))
-    #     changed_domain = {attr: {"type": "discrete", "domain": 2} for attr in attr_list}
-    #     domain = Domain(changed_domain, attr_list)
-
-    attr_num = data.shape[1]
-    data_num = data.shape[0]
-    # attr_num = 10
-    domain = json.load(open('./preprocess/'+data_name+'.json'))
-    domain = {int(key): domain[key] for key in domain}
-    domain = Domain(domain, list(range(attr_num)))
-
-    marginal_list = [tuple(sorted(list(np.random.choice(attr_num, k, replace=False)))) for i in range(query_num)]
-    marginal_dict = {}
-    size_limit = 1e8
-    for marginal in marginal_list:
-        temp_domain = domain.project(marginal)
-        if temp_domain.size() < size_limit:
-            # It is fast when domain is small, howerver it will allocate very large array
-            edge = temp_domain.edge()
-            histogram, _ = np.histogramdd(data[:, marginal], bins=edge)
-            marginal_dict[marginal] = histogram
-        else:
-            uniques, cnts = np.unique(data, return_counts=True, axis=0)
-            uniques = [tuple(item) for item in uniques]
-            cnts = [int(item) for item in cnts]
-            marginal_dict[marginal] =  dict(zip(uniques, cnts))
-
-    # total variation distance
-    tvd_list = []
-    # for dp_data_path in dp_data_list:
-    for dp_data in dp_data_list:
-        # dp_data, headings = utils.tools.read_csv(dp_data_path, print_info=False)
-        dp_data = np.array(dp_data, dtype=int)
-        dp_data_num = len(dp_data)
-        tvd = 0
-        # print('data:', dp_data_path)
-        for marginal in marginal_dict:
-            temp_domain = domain.project(marginal)
-            if temp_domain.size() < size_limit:
-                edge = temp_domain.edge()
-                histogram, _ = np.histogramdd(dp_data[:, marginal], bins=edge)
-                histogram *= data_num/dp_data_num
-                temp_tvd = np.sum(np.abs(marginal_dict[marginal] - histogram)) / len(data) / 2
-            else:
-                uniques, cnts = np.unique(dp_data, return_counts=True, axis=0)
-                uniques = [tuple(item) for item in uniques]
-                cnts = [int(item)*data_num/dp_data_num for item in cnts]
-                diff = []
-                unique_cnt = marginal_dict[marginal]
-                for i in range(len(uniques)):
-                    if uniques[i] in unique_cnt:
-                        diff.append(cnts[i] - unique_cnt[uniques[i]])
-                    else:
-                        diff.append(cnts[i])
-                diff = np.array(diff)
-                # TVD = 1/2 * sum(abs(diff)) = 1.0 * sum(max(diff, 0))
-                diff[diff<0] = 0
-                temp_tvd = np.sum(diff)/len(data)
-
-            if temp_tvd > 1:
-                print(marginal, temp_domain.size(), temp_tvd)
-            tvd += temp_tvd
-            # print('    {}: {}'.format(marginal, temp_tvd))
-        tvd /= len(marginal_dict)
-        tvd_list.append(tvd)
-    return tvd_list
 
 # evaluate dp data on SVM classifier task
 def svm_classifier(exp_name, data_name, dp_data_list, classifier_num, target_list, \
@@ -282,27 +201,20 @@ def merge_json(dict1, dict2, update=False):
     return merge_dict(dict1, dict2)
 
 # main function for running experiments
-def run_experiment(data_list, method, exp_name, theta,private_method,\
-    epsilon_list,  task='TVD', repeat=10, marginal_num=300, \
+def run_experiment(data, method, exp_name, private_method,\
+    epsilon,  task='TVD', repeat=10, marginal_num=300, \
         classifier_num=10, generate=True):
     if task == 'TVD':
-        result = marginal_exp(data_list, method, exp_name, theta,private_method,\
-            epsilon_list,  repeat=repeat, marginal_num=marginal_num, \
+        result = marginal_exp(data, method, exp_name, private_method,\
+            epsilon,  repeat=repeat, marginal_num=marginal_num, \
                 classifier_num=classifier_num)
-        path = './result/1109/'+exp_name+'_TVD.json'
+        path = './result/'+exp_name+'_TVD.json'
 
         print(result)
         json.dump(result, open(path, 'w'))
-    elif task == 'range_query':
-        result = query_exp(data_list, method, exp_name, theta,private_method,\
-            epsilon_list,  repeat=repeat, marginal_num=marginal_num, \
-                classifier_num=classifier_num)
-        path = './result/1109/'+exp_name+'_query.json'
-        print(result)
-        json.dump(result, open(path, 'w'))
     else:
-        svm_exp(data_list, method, exp_name, theta,private_method,\
-            epsilon_list,  repeat=repeat, marginal_num=marginal_num, \
+        svm_exp(data, method, exp_name, private_method,\
+            epsilon,  repeat=repeat, marginal_num=marginal_num, \
                 classifier_num=classifier_num, generate=generate)
         # the result is in './result/'+exp_name+'_SVM.json'
 
@@ -319,65 +231,57 @@ def cross_validation_data(data_name):
         utils.tools.write_csv(full_data[start: end], headings, './exp_data/'+data_name+str(j)+'.csv')
                 
         
-def svm_exp(data_name_list, method, exp_name, theta, private_method,\
-    epsilon_list, repeat=2, marginal_num=300, classifier_num=1, generate=True):
+def svm_exp(data_name, method, exp_name, private_method,\
+    epsilon, repeat=2, marginal_num=300, classifier_num=1, generate=True):
     result = {}
     # generate target attribute list, which should be performed only once
     target_dict = {}
-    for data_name in data_name_list:
-        domain_json = json.load(open('./preprocess/'+data_name+'.json'))
-        target_list = list(range(len(domain_json)))
-        random.shuffle(target_list)
-        if data_name == 'adult':
-            target_dict[data_name] = [14]
-        elif data_name == 'br2000':
-            target_dict[data_name] = [13]
-        elif data_name == 'fire':
-            target_dict[data_name] = [7]
-        else:
-            target_dict[data_name] = target_list
+    domain_json = json.load(open('./preprocess/'+data_name+'.json'))
+    target_list = list(range(len(domain_json)))
+    random.shuffle(target_list)
+    target_dict[data_name] = target_list
 
-        if generate:
-            cross_validation_data(data_name)
+    if generate:
+        cross_validation_data(data_name)
 
     json.dump(target_dict, open('./exp_data/target.json', 'w'))
     target_dict = json.load(open('./exp_data/target.json'))
 
     if generate:
-        for epsilon in epsilon_list:
-            print('epsilon {}'.format(epsilon))
-            result[str(epsilon)] = {}
-            for data_name in data_name_list:
-                print('  data {}'.format(data_name))
-                result[str(epsilon)][data_name] = {}
-                for i in range(repeat):
-                    result[str(epsilon)][data_name][str(i)] = {}
-                    print('    repeat {}/{}'.format(i, repeat))
-                    # print('    method {}'.format(method_list))
-                    full_data = []
-                    for k in range(5):
-                        data_list, _ = utils.tools.read_csv('./exp_data/'+data_name+str(k)+'.csv')
-                        full_data.append(data_list)
-                    full_data = [np.array(temp, dtype=int) for temp in full_data]
+        # for epsilon in epsilon:
+        print('epsilon {}'.format(epsilon))
+        result[str(epsilon)] = {}
+        # for data_name in data_name:
+        print('  data {}'.format(data_name))
+        result[str(epsilon)][data_name] = {}
+        for i in range(repeat):
+            result[str(epsilon)][data_name][str(i)] = {}
+            print('    repeat {}/{}'.format(i, repeat))
+            # print('    method {}'.format(method_list))
+            full_data = []
+            for k in range(5):
+                data_list, _ = utils.tools.read_csv('./exp_data/'+data_name+str(k)+'.csv')
+                full_data.append(data_list)
+            full_data = [np.array(temp, dtype=int) for temp in full_data]
 
-                    for j in range(0, 5):
-                    # for j in range(4, 5):
-                        print('cross validation: {}/{}'.format(j, 5))
-                        headings = list(range(len(full_data[0][0])))
+            for j in range(0, 5):
+            # for j in range(4, 5):
+                print('cross validation: {}/{}'.format(j, 5))
+                headings = list(range(len(full_data[0][0])))
 
-                        train_data = [full_data[temp] for temp in range(5) if temp != j]
-                        train_data = np.concatenate(full_data, axis=0)
-                        pd.DataFrame(train_data).to_csv('./exp_data/'+data_name+'_train.csv', header=headings, index=None)
+                train_data = [full_data[temp] for temp in range(5) if temp != j]
+                train_data = np.concatenate(full_data, axis=0)
+                pd.DataFrame(train_data).to_csv('./exp_data/'+data_name+'_train.csv', header=headings, index=None)
 
-                        dp_data_list = []
-                        # for method in method_list:
-                        temp_exp_name = exp_name+str(epsilon)+'_'+str(j)
+                dp_data_list = []
+                # for method in method_list:
+                temp_exp_name = exp_name+str(epsilon)+'_'+str(j)
 
-                        if method == 'ver_PrivMRF':
-                            # dp_data_list.append('./out/'+method+'_'+data_name+'_'+temp_exp_name+'.csv')
-                            data_list = run_syn_ver(data_name, temp_exp_name, theta, private_method, epsilon,  task='SVM')
-                        else:
-                            data_list = run_syn_cen(data_name, temp_exp_name, epsilon, task='SVM')
+                if method == 'ver_PrivMRF':
+                    # dp_data_list.append('./out/'+method+'_'+data_name+'_'+temp_exp_name+'.csv')
+                    data_list = run_syn_ver(data_name, temp_exp_name, private_method, epsilon,  task='SVM')
+                else:
+                    data_list = run_syn_cen(data_name, temp_exp_name, epsilon, task='SVM')
     else:
         print_lock = mp.Lock()
         result_lock = mp.Lock()
@@ -386,154 +290,85 @@ def svm_exp(data_name_list, method, exp_name, theta, private_method,\
         # open it in case you have attribute num x dataset x epsilon x cross validation cores
         target_parallel = False
                         
-        for epsilon in epsilon_list:
-            print_lock.acquire()
-            print('epsilon {}'.format(epsilon))
-            print_lock.release()
+        # for epsilon in epsilon_list:
+        print_lock.acquire()
+        print('epsilon {}'.format(epsilon))
+        print_lock.release()
 
-            for data_name in data_name_list:
-                print_lock.acquire()
-                print('  data {}'.format(data_name))
-                print_lock.release()
+        # for data_name in data_name_list:
+        print_lock.acquire()
+        print('  data {}'.format(data_name))
+        print_lock.release()
 
-                full_data = []
-                for k in range(5):
-                    data_list, _ = utils.tools.read_csv('./exp_data/'+data_name+str(k)+'.csv')
-                    full_data.append(data_list)
-                full_data = [np.array(temp, dtype=int) for temp in full_data]
+        full_data = []
+        for k in range(5):
+            data_list, _ = utils.tools.read_csv('./exp_data/'+data_name+str(k)+'.csv')
+            full_data.append(data_list)
+        full_data = [np.array(temp, dtype=int) for temp in full_data]
 
-                for j in range(0, 5):
-                    print('cross validation: {}/{}'.format(j, 5))
-                    dp_data_list = []
-                    temp_exp_name = exp_name+str(epsilon)+'_'+str(j)
-                    # dp_data_list.append('./out/'+method+'_'+data_name+'_'+temp_exp_name+'.csv')
-                    if method == 'ver_PrivMRF':
-                        dp_data_list.append('./out/' + 'PrivMRF_' + data_name + '_ver_epsilon' + str(epsilon) +'_'+ temp_exp_name + '.csv')
-                    else:
-                        './out/' + 'PrivMRF_'+ data_name + '_' + exp_name + '.csv'
-                        dp_data_list.append('./out/' + 'PrivMRF_'+ data_name + '_' + temp_exp_name + '.csv')
-                    if target_parallel:
-                        for i in range(len(target_dict[data_name])):
+        for j in range(0, 5):
+            print('cross validation: {}/{}'.format(j, 5))
+            dp_data_list = []
+            temp_exp_name = exp_name+str(epsilon)+'_'+str(j)
+            # dp_data_list.append('./out/'+method+'_'+data_name+'_'+temp_exp_name+'.csv')
+            if method == 'ver_PrivMRF':
+                dp_data_list.append('./out/' + 'PrivMRF_' + data_name + '_ver_epsilon' + str(epsilon) +'_'+ temp_exp_name + '.csv')
+            else:
+                './out/' + 'PrivMRF_'+ data_name + '_' + exp_name + '.csv'
+                dp_data_list.append('./out/' + 'PrivMRF_'+ data_name + '_' + temp_exp_name + '.csv')
+            if target_parallel:
+                for i in range(len(target_dict[data_name])):
 
-                            proc = mp.Process(target=svm_classifier, \
-                                args=(exp_name, data_name, dp_data_list, classifier_num, [target_dict[data_name][i]],\
-                                    print_lock, result_lock, epsilon, j, target_parallel))
-                            proc.start()
-                    else:
-                        proc = mp.Process(target=svm_classifier, \
-                            args=(exp_name, data_name, dp_data_list, classifier_num, target_dict[data_name],\
-                                print_lock, result_lock, epsilon, j, target_parallel))
-                        proc.start()
+                    proc = mp.Process(target=svm_classifier, \
+                        args=(exp_name, data_name, dp_data_list, classifier_num, [target_dict[data_name][i]],\
+                            print_lock, result_lock, epsilon, j, target_parallel))
+                    proc.start()
+            else:
+                proc = mp.Process(target=svm_classifier, \
+                    args=(exp_name, data_name, dp_data_list, classifier_num, target_dict[data_name],\
+                        print_lock, result_lock, epsilon, j, target_parallel))
+                proc.start()
 
         
-def marginal_exp(data_list, method, exp_name, theta, private_method,\
-    epsilon_list, repeat=10, marginal_num=300, classifier_num=10):
+def marginal_exp(data_name, method, exp_name, private_method,\
+    epsilon, repeat=10, marginal_num=300, classifier_num=10):
 
     ways = [3, 4, 5]
-    for epsilon in epsilon_list:
+    for i in range(repeat):
         
-        for data_name in data_list:
-            
-            # for i in range(8, 10):
-            for i in range(repeat):
-                
-                print('epsilon {}'.format(epsilon))
-                print('  data {}'.format(data_name))
-                print('    repeat {}/{}'.format(i, repeat))
-                print('    method {}'.format(method))
+        print('epsilon {}'.format(epsilon))
+        print('  data {}'.format(data_name))
+        print('    repeat {}/{}'.format(i, repeat))
+        print('    method {}'.format(method))
 
-                dp_data_list = []
-                # for method in method_list:
-                temp_exp_name = exp_name
-                if method == 'ver_PrivMRF':
-                    dp_data_list.append(run_syn_ver(data_name, temp_exp_name, theta, private_method, epsilon,  task='TVD'))
-                elif method == 'cen_PrivMRF':
-                    dp_data_list.append(run_syn_cen(data_name, temp_exp_name, epsilon, task='TVD'))
-                else:
-                    dp_data_list.append(run_syn_cen(data_name, temp_exp_name, epsilon, task='TVD'))
+        dp_data_list = []
+        temp_exp_name = exp_name
+        if method == 'ver_PrivMRF':
+            dp_data_list.append(run_syn_ver(data_name, temp_exp_name, private_method, epsilon,  task='TVD'))
+        elif method == 'cen_PrivMRF':
+            dp_data_list.append(run_syn_cen(data_name, temp_exp_name, epsilon, task='TVD'))
+        else:
+            dp_data_list.append(run_syn_cen(data_name, temp_exp_name, epsilon, task='TVD'))
 
-                for k in ways:
-                    tvd_list = k_way_marginal(data_name, dp_data_list, k, marginal_num)
-                    print('      {} way marginal {}'.format(k, tvd_list))
+        for k in ways:
+            tvd_list = k_way_marginal(data_name, dp_data_list, k, marginal_num)
+            print('      {} way marginal {}'.format(k, tvd_list))
 
-                    if os.path.exists('./result/1109/'+str(data_name)+str(theta)+temp_exp_name+ method+'_epsilon' + str(epsilon)  +'_'+'_log.json'):
-                        with open('./result/1109/'+str(data_name)+str(theta)+temp_exp_name+method+'_epsilon' + str(epsilon)  +'_'+'_log.json', 'r') as in_file:
-                            result = json.load(in_file)
-                    else:
-                        result = {}
-                    if str(epsilon) not in result:
-                        result[str(epsilon)] = {}
-                    if data_name not in result[str(epsilon)]:
-                        result[str(epsilon)][data_name] = {}
-                    if str(i) not in result[str(epsilon)][data_name]:
-                        result[str(epsilon)][data_name][str(i)] = {}
-                    result[str(epsilon)][data_name][str(i)][str(k)] = tvd_list
+            if os.path.exists('./result/'+exp_name+'_log.json'):
+                with open('./result/'+exp_name+'_log.json', 'r') as in_file:
+                    result = json.load(in_file)
+            else:
+                result = {}
+            if str(epsilon) not in result:
+                result[str(epsilon)] = {}
+            if data_name not in result[str(epsilon)]:
+                result[str(epsilon)][data_name] = {}
+            if str(i) not in result[str(epsilon)][data_name]:
+                result[str(epsilon)][data_name][str(i)] = {}
+            result[str(epsilon)][data_name][str(i)][str(k)] = tvd_list
 
-                    with open('./result/1109/'+str(data_name)+str(theta)+temp_exp_name+ method+'_epsilon' + str(epsilon)  +'_'+'_log.json', 'w') as out_file:
-                        json.dump(result, out_file)
-
-    average = {}
-    for epsilon in result:
-        average[epsilon] = {}
-        for data_name in result[epsilon]:
-            average[epsilon][data_name] = {}
-            for k in ways:
-                temp = []
-                for i in result[epsilon][data_name]:
-                    temp.append(result[epsilon][data_name][i][str(k)])
-                temp = np.array(temp)
-                temp = np.sum(temp, axis=0)/len(temp)
-                average[epsilon][data_name][str(k)] = list(temp)
-    print(average)
-    return average
-
-def query_exp(data_list, method, exp_name, theta, private_method,\
-    epsilon_list, repeat=10, marginal_num=300, classifier_num=10):
-
-    ways = [3]
-    query_num = 1000
-    for epsilon in epsilon_list:
-        
-        for data_name in data_list:
-
-            for rep in range(repeat):
-
-                for i in range(query_num):
-                    
-                    print('epsilon {}'.format(epsilon))
-                    print('  data {}'.format(data_name))
-                    print('    repeat {}/{}'.format(rep, repeat))
-                    print('    method {}'.format(method))
-
-                    dp_data_list = []
-                    # for method in method_list:
-                    temp_exp_name = exp_name
-                    if method == 'ver_PrivMRF':
-                        dp_data_list.append(run_syn_ver(data_name, temp_exp_name, theta, private_method, epsilon,  task='TVD'))
-                    elif method == 'cen_PrivMRF':
-                        dp_data_list.append(run_syn_cen(data_name, temp_exp_name, epsilon, task='TVD'))
-                    else:
-                        dp_data_list.append(run_syn_cen(data_name, temp_exp_name, epsilon, task='TVD'))
-
-                    for k in ways:
-                        tvd_list = k_way_marginal(data_name, dp_data_list, k, marginal_num)
-                        print('      {} way marginal {}'.format(k, tvd_list))
-
-                        if os.path.exists('./result/1109/'+str(data_name)+str(theta)+temp_exp_name+ method+'_epsilon' + str(epsilon)  +'_'+'_log.json'):
-                            with open('./result/1109/'+str(data_name)+str(theta)+temp_exp_name+method+'_epsilon' + str(epsilon)  +'_'+'_log.json', 'r') as in_file:
-                                result = json.load(in_file)
-                        else:
-                            result = {}
-                        if str(epsilon) not in result:
-                            result[str(epsilon)] = {}
-                        if data_name not in result[str(epsilon)]:
-                            result[str(epsilon)][data_name] = {}
-                        if str(i) not in result[str(epsilon)][data_name]:
-                            result[str(epsilon)][data_name][str(i)] = {}
-                        result[str(epsilon)][data_name][str(i)][str(k)] = tvd_list
-
-                        with open('./result/1109/'+str(data_name)+str(theta)+temp_exp_name+ method+'_epsilon' + str(epsilon)  +'_'+'_log.json', 'w') as out_file:
-                            json.dump(result, out_file)
+            with open('./result/'+exp_name+'_log.json', 'w') as out_file:
+                json.dump(result, out_file)
 
     average = {}
     for epsilon in result:

@@ -4,11 +4,11 @@ import numpy as np
 import random
 import itertools
 import math
-from .domain import Domain
+from .utils.domain import Domain
 from networkx.readwrite import json_graph
 import json
 import pickle
-from .factor import Factor
+from .utils.factor import Factor
 import time
 import logging
 import copy

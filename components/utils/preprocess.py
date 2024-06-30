@@ -1,14 +1,9 @@
 import os
 import json
-from .utils import tools
-import pickle
+from . import tools
 import numpy as np
 from .domain import Domain
-import csv
-import random
-import pandas as pd
 from . import attribute_hierarchy as ah
-from sklearn.preprocessing import OneHotEncoder
 
 # convert int data to string data
 def data_num_to_str(map_list, np_data):
